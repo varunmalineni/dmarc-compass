@@ -13,8 +13,8 @@ export interface AdminCreds {
   password: string;
 }
 
-/** The admin login. It also protects the internal container's own UI
- * (/classic), so the same pair is handed to the container at start. */
+/** The admin login. The same pair is handed to the container at start, which
+ * uses it to protect its own HTTP API. */
 export function getAdminCreds(env: AdminEnv): AdminCreds | null {
   const user = env.ADMIN_USER || env.HTTP_SERVER_USER;
   const password = env.ADMIN_PASSWORD || env.HTTP_SERVER_PASSWORD;

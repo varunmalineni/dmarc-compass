@@ -95,7 +95,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
         <div style="font-weight:600" id="vis-label">Allow anyone with the link to view the dashboard</div>
         <div class="hint" style="margin-top:4px">
           Off (default): every page asks for the admin login. On: the read-only pages (Overview, Domains, reports, TLS, map) are public.
-          This page and the Classic dashboard always require login. Public pages show your sending IPs and pass rates, so enable this only if that is acceptable.
+          This page always requires login. Public pages show your sending IPs and pass rates, so enable this only if that is acceptable.
         </div>
       </div>
       <label class="switch"><input type="checkbox" id="public-toggle" aria-labelledby="vis-label" ${vm.publicDashboard ? "checked" : ""}><span class="slider"></span></label>
@@ -147,7 +147,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   return layout({
     title: "Admin",
     subtitle: "Setup, mailbox and visibility. Requires the admin login.",
-    active: null,
+    active: "admin",
     url,
     body: `${status}${visibility}${imap}`,
     scripts,

@@ -59,7 +59,7 @@ export class DmarcViewerContainer extends Container<Env> {
 
     // Internal only: the Worker calls this after a settings save so the
     // container restarts with the new environment. It is never reachable
-    // from outside - only /classic/* is proxied through to this class.
+    // from outside; the Worker is the only caller of this class.
     if (url.pathname === "/admin/restart") {
       if (request.headers.get("x-admin-token") !== creds.password) {
         return new Response("Forbidden\n", { status: 403 });
@@ -253,19 +253,6 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
-
-    // The original dmarc-report-viewer UI, served straight from the container
-    // under /classic. It enforces the admin login itself, and its entry page
-    // uses relative asset paths, so it needs the trailing slash.
-    if (pathname === "/classic") {
-      return Response.redirect(new URL("/classic/", request.url).toString(), 302);
-    }
-    if (pathname.startsWith("/classic/")) {
-      const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
-      const inner = new URL(request.url);
-      inner.pathname = pathname.slice("/classic".length);
-      return container.fetch(new Request(inner, request));
-    }
 
     await ensureSchema(env.DB);
 

@@ -97,12 +97,11 @@ A sidebar holds the navigation, with a light/dark theme toggle. The top bar carr
 | **DMARC reports** | Every report, filterable by DKIM/SPF problems, with per-record detail. |
 | **TLS reports** | SMTP TLS (MTA-STS / DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
-| **Classic dashboard** (`/classic/`) | The upstream project's own UI, as a fallback and for raw XML/JSON export. |
-| **/admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Not linked from the nav; always requires login. |
+| **/admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Linked at the bottom of the sidebar; always requires login. |
 
 ### Who can see the dashboard
 
-By default **every page requires the admin login**. In `/admin` you can switch on *"Allow anyone with the link to view the dashboard"*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that's acceptable before enabling it. `/admin` and `/classic/` are never public.
+By default **every page requires the admin login**. In `/admin` you can switch on *"Allow anyone with the link to view the dashboard"*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that's acceptable before enabling it. `/admin` is never public.
 
 ## Operating it
 

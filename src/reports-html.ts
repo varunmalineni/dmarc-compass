@@ -100,12 +100,7 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
       <tr><td>Domain</td><td>${escapeHtml(d.domain)}</td></tr>
       <tr><td>Period</td><td>${fmtDate(d.dateBegin)} &ndash; ${fmtDate(d.dateEnd)}</td></tr>
       <tr><td>Published policy</td><td><code>p=${escapeHtml(d.policy)}</code>${d.pct !== null ? ` &middot; pct=${d.pct}` : ""}</td></tr>
-    </table>
-    <p class="hint" style="margin:14px 0 0">
-      <a href="/classic/dmarc-reports/${encodeURIComponent(d.hash)}/json" target="_blank" rel="noopener">Raw JSON</a> &middot;
-      <a href="/classic/dmarc-reports/${encodeURIComponent(d.hash)}/xml" target="_blank" rel="noopener">Raw XML</a>
-      <span class="muted">(served by the classic dashboard; asks for the admin login)</span>
-    </p>`,
+    </table>`,
   )}
   ${panel(
     `Records (${fmtNumber(d.records.length)})`,
