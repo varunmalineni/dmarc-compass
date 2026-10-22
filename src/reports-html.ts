@@ -78,7 +78,7 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
     .map(
       (r) => `<tr>
       <td><div class="esp">${escapeHtml(r.esp)}</div></td>
-      <td><code>${escapeHtml(r.ip)}</code>${r.ptr ? `<div class="ptr">${escapeHtml(r.ptr)}</div>` : ""}</td>
+      <td><code>${escapeHtml(r.ip)}</code>${r.ptr ? `<div class="ptr" title="${escapeHtml(r.ptr)}">${escapeHtml(r.ptr)}</div>` : ""}</td>
       <td class="num">${fmtNumber(r.count)}</td>
       <td>${escapeHtml(r.disposition)}</td>
       <td>${r.policyDkim ? `<span class="badge ${r.policyDkim === "pass" ? "good" : "bad"}">${escapeHtml(r.policyDkim)}</span>` : "&ndash;"}</td>

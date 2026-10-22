@@ -28,12 +28,12 @@ function delta(cur: number, prev: number | null, kind: "pct" | "pp"): string {
     const d = ((cur - prev) / prev) * 100;
     const cls = Math.abs(d) < 0.5 ? "flat" : "flat";
     const arrow = d > 0.5 ? "&#9650;" : d < -0.5 ? "&#9660;" : "&ndash;";
-    return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(0)}%</span><span>vs previous period</span>`;
+    return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(0)}%</span><span>vs prior</span>`;
   }
   const d = cur - prev;
   const cls = Math.abs(d) < 0.05 ? "flat" : d > 0 ? "up" : "down";
   const arrow = d > 0.05 ? "&#9650;" : d < -0.05 ? "&#9660;" : "&ndash;";
-  return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)} pts</span><span>vs previous period</span>`;
+  return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)} pts</span><span>vs prior</span>`;
 }
 
 function share(pct: number): string {
@@ -43,7 +43,7 @@ function share(pct: number): string {
 function sourceRow(r: SourceRow): string {
   return `<tr>
     <td><div class="esp">${escapeHtml(r.esp)}</div></td>
-    <td><code>${escapeHtml(r.ip)}</code>${r.ptr ? `<div class="ptr">${escapeHtml(r.ptr)}</div>` : ""}</td>
+    <td><code>${escapeHtml(r.ip)}</code>${r.ptr ? `<div class="ptr" title="${escapeHtml(r.ptr)}">${escapeHtml(r.ptr)}</div>` : ""}</td>
     <td class="num">${fmtNumber(r.domains)}</td>
     <td class="num">${fmtNumber(r.total)}</td>
     <td>${rateCell(r.rate)}</td>
@@ -193,8 +193,10 @@ export function renderOverviewBody(
   </section>`;
 
   const body = `${welcome}${kpis}
-  <div class="grid-main">${trendPanel}${enforcementPanel(data, multi)}</div>
-  <div class="grid-main">${volumePanel}${sendersPanel}</div>
+  <div class="grid-main">
+    <div class="stack">${trendPanel}${volumePanel}</div>
+    <div class="stack">${enforcementPanel(data, multi)}${sendersPanel}</div>
+  </div>
   ${sourcesPanel}`;
 
   const chartData = {

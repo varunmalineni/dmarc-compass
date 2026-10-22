@@ -13,6 +13,7 @@
     "dev": "node scripts/wrangler.mjs dev",
     "deploy": "node scripts/wrangler.mjs deploy",
     "tail": "node scripts/wrangler.mjs tail",
+    "demo": "node scripts/seed-demo.mjs --apply",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

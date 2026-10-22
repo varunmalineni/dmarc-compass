@@ -15,7 +15,7 @@ function row(r: DomainRow, f: Filters): string {
   // Drilling into a domain keeps the time range but replaces the domain filter.
   const href = withFilters("/", { ...f, domains: [r.domain] });
   return `<tr class="clickable" onclick="location.href='${href}'">
-    <td><a href="${href}" style="color:inherit;font-weight:600;text-decoration:none">${escapeHtml(r.domain)}</a></td>
+    <td><a href="${href}" style="color:inherit;font-weight:600;text-decoration:none;white-space:nowrap">${escapeHtml(r.domain)}</a></td>
     <td>${r.policy ? `<code>p=${escapeHtml(r.policy)}</code>` : '<span class="muted">&ndash;</span>'}</td>
     <td><span class="badge ${s.tone}">${s.label}</span></td>
     <td class="num">${fmtNumber(r.total)}</td>

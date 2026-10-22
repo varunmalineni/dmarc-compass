@@ -2,6 +2,11 @@
 
 A self-hosted dashboard for your **DMARC aggregate reports** and **SMTP TLS reports**, built to run entirely on Cloudflare (Workers, D1, Containers). Point your domains' `rua=` address at one mailbox, and dmarc-compass turns the stream of XML attachments into something you can actually read: who is sending as your domain, what is failing, and whether you're ready to move from `p=none` to `p=reject`.
 
+<p align="center">
+  <img src="docs/images/tour.gif" alt="A tour of dmarc-compass: Overview, Domains, a report, the sender map and TLS reports" width="860">
+</p>
+<p align="center"><sub>All screenshots and recordings in this README use synthetic data: invented <code>.example</code> domains and documentation-range IP addresses. See <a href="#try-it-without-a-mailbox">Try it without a mailbox</a>.</sub></p>
+
 - **Many domains, one mailbox.** Every query is domain-aware, with a searchable multi-select filter. Built with fleets of hundreds or thousands of domains in mind.
 - **Enforcement readiness.** For the last 30 days, which sources fail alignment, and how many messages would have been quarantined or rejected if you tightened policy today.
 - **Sender identification and trends.** Raw IPs become "Amazon SES", "Google Workspace" and so on. Volume and pass/fail are charted over time, and every source is plotted on a map.
@@ -10,6 +15,33 @@ A self-hosted dashboard for your **DMARC aggregate reports** and **SMTP TLS repo
 - **Configured from the browser.** Mailbox credentials, dashboard visibility and manual syncs live on an authenticated `/admin` page. Credentials are encrypted before they are stored.
 
 > **Status:** early. It does what is described here and nothing more; see [Limitations](#limitations).
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/images/overview-light.png"><img src="docs/images/overview-light.png" alt="Overview page, light theme"></a><br><sub><b>Overview.</b> KPIs against the previous period, authentication trend, enforcement readiness, top failing senders.</sub></td>
+    <td width="50%"><a href="docs/images/overview-dark.png"><img src="docs/images/overview-dark.png" alt="Overview page, dark theme"></a><br><sub><b>Dark theme.</b> Follows your system setting, with a toggle in the sidebar.</sub></td>
+  </tr>
+  <tr>
+    <td><a href="docs/images/domains.png"><img src="docs/images/domains.png" alt="Domains page"></a><br><sub><b>Domains.</b> Riskiest first, with policy, status, failing volume and pass rate for every domain.</sub></td>
+    <td><a href="docs/images/map.png"><img src="docs/images/map.png" alt="Sender map"></a><br><sub><b>Sender map.</b> Where your mail comes from, sized by volume and coloured by pass rate.</sub></td>
+  </tr>
+  <tr>
+    <td><a href="docs/images/reports.png"><img src="docs/images/reports.png" alt="DMARC reports list"></a><br><sub><b>DMARC reports.</b> Search, sort, and filter to reports with DKIM or SPF problems.</sub></td>
+    <td><a href="docs/images/tls.png"><img src="docs/images/tls.png" alt="TLS reports page"></a><br><sub><b>TLS reports.</b> Session success rate per domain and the latest failures.</sub></td>
+  </tr>
+</table>
+
+### Filters that follow you everywhere
+
+A domain multi-select and a time range sit in the top bar of every page. They live in the URL, so any view can be bookmarked or shared.
+
+<p align="center"><img src="docs/images/filters.gif" alt="Selecting two domains and changing the time range" width="760"></p>
+
+### Light and dark
+
+<p align="center"><img src="docs/images/theme.gif" alt="Toggling between light and dark themes" width="760"></p>
 
 ## How it works
 
@@ -103,6 +135,18 @@ A sidebar holds the navigation, with a light/dark theme toggle. The top bar carr
 
 By default **every page requires the admin login**. In `/admin` you can switch on *"Allow anyone with the link to view the dashboard"*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that's acceptable before enabling it. `/admin` is never public.
 
+## Try it without a mailbox
+
+You can explore the whole UI locally with synthetic data, no Cloudflare account or IMAP mailbox needed. The data is 22 invented `.example` domains with realistic sender mixes, a few misconfigured senders, and some TLS failures. It is also how the screenshots above were made.
+
+```bash
+npm install
+npm run dev          # leave running; open http://localhost:8787 once so the tables are created
+npm run demo         # in a second terminal: loads the demo data into the local database
+```
+
+Reload the page. `npm run demo` only ever writes to the local simulator (it always passes `--local`), never to a deployed database, and it replaces any reports already in the local database. Copy `.dev.vars.example` to `.dev.vars` before the first `npm run dev` (the app will not start without an admin login configured). Docker must be running, as for any `wrangler dev` with a container.
+
 ## Operating it
 
 ```bash
@@ -121,7 +165,7 @@ npm run typecheck
 - The admin login is a Worker secret (`ADMIN_USER` / `ADMIN_PASSWORD`) compared on every request to `/admin`. It is HTTP Basic Auth, so always use the HTTPS `workers.dev` or custom-domain URL.
 - Mailbox credentials entered on `/admin` are encrypted with AES-GCM using `CONFIG_ENCRYPTION_KEY`, a write-only Worker secret, before they reach D1. They are never sent back to the browser. **Do not rotate or lose that key without re-entering the mailbox password**: the stored value can no longer be decrypted.
 - State-changing requests from `/admin` require a custom request header that a cross-site form cannot send (CSRF protection).
-- The container is only reachable through the Worker, and its own UI is behind the same login.
+- The container is only reachable through the Worker; nothing on the public URL is proxied to it.
 - The public-dashboard switch defaults to **off**.
 
 Found a vulnerability? Please report it privately through GitHub's *Security → Report a vulnerability* rather than a public issue.
