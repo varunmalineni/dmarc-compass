@@ -1,0 +1,344 @@
+import { Container, getContainer } from "@cloudflare/containers";
+import { syncReports } from "./sync";
+import { loadDashboardData } from "./dashboard-data";
+import { renderDashboard } from "./dashboard-html";
+import { loadReportsList, loadReportDetail } from "./reports-data";
+import { renderReportsList, renderReportDetail } from "./reports-html";
+import {
+  getEffectiveImapConfig,
+  getOverriddenKeys,
+  setConfigOverride,
+  isImapConfigured,
+  type ConfigKey,
+} from "./settings-data";
+import { renderAdmin } from "./admin-html";
+import { loadDomainsOverview, loadAllDomainNames } from "./domains-data";
+import { renderDomainsOverview } from "./domains-html";
+import { loadTlsData } from "./tls-data";
+import { renderTlsReports } from "./tls-html";
+import { loadMapPoints } from "./map-data";
+import { renderMap } from "./map-html";
+import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
+import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync } from "./app-settings";
+import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
+
+interface Env extends AdminEnv {
+  DMARC_CONTAINER: DurableObjectNamespace<DmarcViewerContainer>;
+  DB: D1Database;
+  /** Encrypts mailbox credentials saved from /admin. Set by `npm run setup`. */
+  CONFIG_ENCRYPTION_KEY?: string;
+  // Optional fallbacks. The mailbox is normally configured from /admin, which
+  // takes precedence over these.
+  IMAP_HOST?: string;
+  IMAP_USER?: string;
+  IMAP_PASSWORD?: string;
+  IMAP_FOLDER?: string;
+}
+
+const HTML = { "content-type": "text/html; charset=utf-8" };
+const NOT_CONFIGURED_MAILBOX =
+  "No mailbox is configured yet.\n\nOpen /admin, enter the IMAP details of the mailbox that receives your DMARC reports, and save.\n";
+
+// A single long-lived instance of the dmarc-report-viewer container, which
+// does the IMAP fetching and report parsing. It keeps everything in memory
+// and re-fetches from IMAP on every start, so the durable copy of the data is
+// the D1 database (see sync.ts), not the container.
+export class DmarcViewerContainer extends Container<Env> {
+  defaultPort = 8080;
+  // Sleep after 30 minutes without requests. The 15-minute cron sync keeps it
+  // awake in practice; if it does sleep, the next request starts it again.
+  sleepAfter = "30m";
+  pingEndpoint = "localhost/health";
+
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const creds = getAdminCreds(this.env);
+    if (!creds) return new Response(SETUP_HELP, { status: 503 });
+
+    // Internal only: the Worker calls this after a settings save so the
+    // container restarts with the new environment. It is never reachable
+    // from outside - only /classic/* is proxied through to this class.
+    if (url.pathname === "/admin/restart") {
+      if (request.headers.get("x-admin-token") !== creds.password) {
+        return new Response("Forbidden\n", { status: 403 });
+      }
+      await this.stop();
+      return new Response("Stopping. The next request starts a fresh container.\n");
+    }
+
+    await ensureSchema(this.env.DB);
+    const imap = await getEffectiveImapConfig(this.env);
+    if (!isImapConfigured(imap)) return new Response(NOT_CONFIGURED_MAILBOX, { status: 503 });
+
+    // Credentials are injected here at start time rather than baked into the
+    // image. Values saved from /admin win over the Worker secrets.
+    await this.startAndWaitForPorts({
+      startOptions: {
+        envVars: {
+          IMAP_HOST: imap.IMAP_HOST,
+          IMAP_PORT: "993",
+          IMAP_USER: imap.IMAP_USER,
+          IMAP_PASSWORD: imap.IMAP_PASSWORD,
+          IMAP_FOLDER: imap.IMAP_FOLDER || "INBOX",
+          IMAP_CHECK_INTERVAL: "900",
+          LOG_LEVEL: "debug",
+          HTTP_SERVER_PORT: "8080",
+          HTTP_SERVER_USER: creds.user,
+          HTTP_SERVER_PASSWORD: creds.password,
+        },
+      },
+    });
+    return this.containerFetch(request);
+  }
+
+  override onStart() {
+    console.log("dmarc-report-viewer container started");
+  }
+
+  override onError(error: unknown) {
+    console.error("dmarc-report-viewer container error:", error);
+    throw error;
+  }
+}
+
+function hasValidBasicAuth(request: Request, env: Env): boolean {
+  const creds = getAdminCreds(env);
+  const auth = request.headers.get("authorization");
+  if (!creds || !auth?.startsWith("Basic ")) return false;
+  try {
+    const decoded = atob(auth.slice(6));
+    const sep = decoded.indexOf(":");
+    if (sep === -1) return false;
+    return decoded.slice(0, sep) === creds.user && decoded.slice(sep + 1) === creds.password;
+  } catch {
+    return false;
+  }
+}
+
+function challenge(env: Env): Response {
+  // No admin login exists yet: say what to do instead of showing a login
+  // prompt that can never succeed.
+  if (!getAdminCreds(env)) return new Response(SETUP_HELP, { status: 503 });
+  return new Response("Unauthorized\n", {
+    status: 401,
+    headers: { "WWW-Authenticate": 'Basic realm="dmarc-compass"' },
+  });
+}
+
+/** Gate for the read-only dashboard pages: open when the admin has made the
+ * dashboard public, otherwise the admin login is required. */
+async function dashboardGate(request: Request, env: Env): Promise<Response | null> {
+  if (await isDashboardPublic(env.DB)) return null;
+  return hasValidBasicAuth(request, env) ? null : challenge(env);
+}
+
+async function restartContainer(env: Env): Promise<void> {
+  const creds = getAdminCreds(env);
+  if (!creds) return;
+  const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
+  try {
+    await container.fetch(
+      new Request("https://internal/admin/restart", { method: "POST", headers: { "x-admin-token": creds.password } }),
+    );
+  } catch (err) {
+    // The container may simply not be running yet; the next request starts it.
+    console.warn("container restart skipped:", err);
+  }
+}
+
+async function runSync(env: Env): Promise<Awaited<ReturnType<typeof syncReports>>> {
+  const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
+  try {
+    const result = await syncReports(container, env);
+    await recordSync(
+      env.DB,
+      true,
+      `${result.newReports} new DMARC reports, ${result.newTlsReports} new TLS reports`,
+    );
+    return result;
+  } catch (err) {
+    await recordSync(env.DB, false, String(err instanceof Error ? err.message : err).slice(0, 200));
+    throw err;
+  }
+}
+
+function jsonError(message: string, status: number): Response {
+  return new Response(message + "\n", { status });
+}
+
+async function handleAdmin(request: Request, env: Env): Promise<Response> {
+  if (!hasValidBasicAuth(request, env)) return challenge(env);
+
+  if (request.method === "POST") {
+    // CSRF guard: a cross-site <form> can't set a custom header without a CORS
+    // preflight, which this app never allows. Only the admin page's own
+    // fetch() calls include it.
+    if (request.headers.get("x-settings-request") !== "1") return jsonError("Forbidden", 403);
+    const body = await request.json<Record<string, unknown>>();
+
+    if (body.action === "sync") {
+      const imap = await getEffectiveImapConfig(env);
+      if (!isImapConfigured(imap)) return jsonError("Configure the mailbox first.", 400);
+      try {
+        return Response.json(await runSync(env));
+      } catch (err) {
+        return jsonError(String(err instanceof Error ? err.message : err), 502);
+      }
+    }
+
+    if (typeof body.public_dashboard === "boolean") {
+      await setDashboardPublic(env.DB, body.public_dashboard);
+      return new Response("OK\n");
+    }
+
+    const fieldMap: Record<string, ConfigKey> = {
+      imap_host: "IMAP_HOST",
+      imap_user: "IMAP_USER",
+      imap_folder: "IMAP_FOLDER",
+      imap_password: "IMAP_PASSWORD",
+    };
+    const changes = Object.entries(fieldMap).filter(([field]) => typeof body[field] === "string" && body[field]);
+    if (changes.length === 0) return new Response("Nothing to save\n");
+    if (!env.CONFIG_ENCRYPTION_KEY) {
+      return jsonError("CONFIG_ENCRYPTION_KEY is not set, so credentials can't be stored. See the setup status on this page.", 400);
+    }
+    for (const [field, key] of changes) {
+      await setConfigOverride(env.DB, env.CONFIG_ENCRYPTION_KEY, key, body[field] as string);
+    }
+    await restartContainer(env);
+    return new Response("OK\n");
+  }
+
+  const [imap, overridden, passwordRow, schemaVersion, counts, lastSync, publicDashboard] = await Promise.all([
+    getEffectiveImapConfig(env),
+    getOverriddenKeys(env.DB),
+    env.DB.prepare("SELECT updated_at FROM settings WHERE key = 'IMAP_PASSWORD'").first<{ updated_at: number }>(),
+    getSchemaVersion(env.DB),
+    env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM dmarc_reports) AS reports,
+         (SELECT COUNT(*) FROM tls_reports) AS tls_reports,
+         (SELECT COUNT(DISTINCT domain) FROM dmarc_reports) AS domains`,
+    ).first<{ reports: number; tls_reports: number; domains: number }>(),
+    getLastSync(env.DB),
+    isDashboardPublic(env.DB),
+  ]);
+
+  return new Response(
+    renderAdmin({
+      imapHost: imap.IMAP_HOST,
+      imapUser: imap.IMAP_USER,
+      imapFolder: imap.IMAP_FOLDER,
+      overridden,
+      passwordUpdatedAt: passwordRow?.updated_at ?? null,
+      publicDashboard,
+      status: {
+        schemaVersion,
+        latestSchemaVersion: LATEST_SCHEMA_VERSION,
+        reports: counts?.reports ?? 0,
+        tlsReports: counts?.tls_reports ?? 0,
+        domains: counts?.domains ?? 0,
+        encryptionKeyConfigured: Boolean(env.CONFIG_ENCRYPTION_KEY),
+        imapConfigured: isImapConfigured(imap),
+        lastSync,
+      },
+    }),
+    { headers: HTML },
+  );
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const pathname = url.pathname;
+
+    // The original dmarc-report-viewer UI, served straight from the container
+    // under /classic. It enforces the admin login itself, and its entry page
+    // uses relative asset paths, so it needs the trailing slash.
+    if (pathname === "/classic") {
+      return Response.redirect(new URL("/classic/", request.url).toString(), 302);
+    }
+    if (pathname.startsWith("/classic/")) {
+      const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
+      const inner = new URL(request.url);
+      inner.pathname = pathname.slice("/classic".length);
+      return container.fetch(new Request(inner, request));
+    }
+
+    await ensureSchema(env.DB);
+
+    if (pathname === "/admin") return handleAdmin(request, env);
+
+    // Everything below is the read-only dashboard, served from D1.
+    const blocked = await dashboardGate(request, env);
+    if (blocked) return blocked;
+
+    const domainParam = url.searchParams.get("domain") || null;
+
+    if (pathname === "/") {
+      const rangeParam = url.searchParams.get("range");
+      const rangeDays = rangeParam ? parseInt(rangeParam, 10) : null;
+      const domainsParam = url.searchParams.get("domains");
+      const domainsFilter = domainsParam
+        ? domainsParam.split(",").map((d) => d.trim()).filter(Boolean)
+        : domainParam
+          ? [domainParam]
+          : null;
+      const [data, allDomains] = await Promise.all([
+        loadDashboardData(env.DB, Number.isFinite(rangeDays) ? rangeDays : null, domainsFilter),
+        loadAllDomainNames(env.DB),
+      ]);
+      return new Response(renderDashboard(data, allDomains), { headers: HTML });
+    }
+
+    if (pathname === "/domains") {
+      return new Response(renderDomainsOverview(await loadDomainsOverview(env.DB)), { headers: HTML });
+    }
+
+    if (pathname === "/reports") {
+      const filterParam = url.searchParams.get("filter");
+      const filter = (["dkim", "spf", "dmarc"].includes(filterParam ?? "") ? filterParam : "all") as
+        | "all"
+        | "dkim"
+        | "spf"
+        | "dmarc";
+      const items = await loadReportsList(env.DB, filter, domainParam);
+      const domainLabel = domainParam ?? items[0]?.domain ?? "All Domains";
+      return new Response(renderReportsList(items, filter, domainLabel, domainParam), { headers: HTML });
+    }
+
+    const reportDetailMatch = pathname.match(/^\/reports\/([^/]+)$/);
+    if (reportDetailMatch) {
+      const detail = await loadReportDetail(env.DB, decodeURIComponent(reportDetailMatch[1]));
+      if (!detail) return new Response("Report not found\n", { status: 404 });
+      return new Response(renderReportDetail(detail, detail.domain), { headers: HTML });
+    }
+
+    if (pathname === "/tls-reports") {
+      const [data, allDomains] = await Promise.all([loadTlsData(env.DB, domainParam), loadAllDomainNames(env.DB)]);
+      return new Response(renderTlsReports(data, allDomains, domainParam), { headers: HTML });
+    }
+
+    if (pathname === "/map") {
+      const [points, allDomains] = await Promise.all([loadMapPoints(env.DB, domainParam), loadAllDomainNames(env.DB)]);
+      return new Response(renderMap(points, allDomains, domainParam), { headers: HTML });
+    }
+
+    return new Response("Not found\n", { status: 404 });
+  },
+
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    await ensureSchema(env.DB);
+    if (event.cron !== "*/15 * * * *") return; // the daily trigger is reserved for alerting
+
+    if (!getAdminCreds(env) || !isImapConfigured(await getEffectiveImapConfig(env))) {
+      console.log("sync skipped: admin login or mailbox not configured yet");
+      return;
+    }
+    try {
+      console.log("sync result:", JSON.stringify(await runSync(env)));
+    } catch (err) {
+      console.error("sync failed:", err);
+    }
+  },
+} satisfies ExportedHandler<Env>;

@@ -1,0 +1,26 @@
+{
+  "name": "dmarc-compass",
+  "version": "0.1.0",
+  "description": "Self-hosted DMARC and TLS-RPT report dashboard for Cloudflare Workers, D1 and Containers",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/wrangler.mjs dev",
+    "deploy": "node scripts/wrangler.mjs deploy",
+    "tail": "node scripts/wrangler.mjs tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261021.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.151.3"
+  }
+}

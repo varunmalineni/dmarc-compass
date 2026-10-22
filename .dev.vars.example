@@ -1,0 +1,15 @@
+# Local development only: `npm run dev` reads this file. Copy it to `.dev.vars`
+# (which is gitignored) and fill it in. Deployed secrets are set by
+# `npm run setup`, not from this file.
+
+ADMIN_USER="admin"
+ADMIN_PASSWORD="use-something-long-and-random"
+
+# Generate with:  openssl rand -base64 32
+CONFIG_ENCRYPTION_KEY="replace-me"
+
+# Optional. You can enter the mailbox on the /admin page instead.
+# IMAP_HOST="imap.example.com"
+# IMAP_USER="dmarc@example.com"
+# IMAP_PASSWORD="app-specific-password"
+# IMAP_FOLDER="INBOX"

@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "dmarc-compass",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-21",
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "DmarcViewerContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DMARC_CONTAINER",
+        "class_name": "DmarcViewerContainer"
+      }
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dmarc-compass"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/15 * * * *",
+      "0 13 * * *"
+    ]
+  },
+  "exports": {
+    "DmarcViewerContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}
