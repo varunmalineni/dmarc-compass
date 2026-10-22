@@ -229,8 +229,8 @@ const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
   { key: "map", href: "/map", label: "Sender map", icon: ICON.map },
 ];
 
-// Runs before first paint so the page never flashes the wrong theme.
-const THEME_INIT = `try{var t=localStorage.getItem('theme');if(!t&&matchMedia('(prefers-color-scheme: dark)').matches)t='dark';if(t)document.documentElement.dataset.theme=t}catch(e){}`;
+// Dark is the default (set on <html>); a saved choice overrides it before first paint, so the page never flashes the wrong theme.
+const THEME_INIT = `try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}`;
 
 const CHART_SETUP = `
 function themeCharts(){
@@ -362,7 +362,7 @@ export function layout(o: PageOpts): string {
   const domainCtl = f && o.chrome ? domainFilterHtml(o.chrome.allDomains, f.domains) : "";
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

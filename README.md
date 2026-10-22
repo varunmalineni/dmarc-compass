@@ -1,18 +1,46 @@
+<div align="center">
+
+<img src="docs/images/logo.svg" alt="" width="72" height="72">
+
 # dmarc-compass
 
-A self-hosted dashboard for your **DMARC aggregate reports** and **SMTP TLS reports**, built to run entirely on Cloudflare (Workers, D1, Containers). Point your domains' `rua=` address at one mailbox, and dmarc-compass turns the stream of XML attachments into something you can actually read: who is sending as your domain, what is failing, and whether you're ready to move from `p=none` to `p=reject`.
+**DMARC and TLS-RPT reporting that runs in your own Cloudflare account.**
 
-<p align="center">
+Point your domains' `rua=` address at one mailbox and see who is sending as you,<br>what is failing, and whether you are ready to move from `p=none` to `p=reject`.
+
+[Quick start](#quick-start) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
+
+<br>
+
+<img src="docs/images/hero.png" alt="The dmarc-compass Overview page in the dark theme" width="880">
+
+<sub>Every screenshot and recording here uses synthetic data: invented <code>.example</code> domains and documentation-range IP addresses.</sub>
+
+</div>
+
+<br>
+
+## Features
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><b>Built for many domains</b><br><sub>A searchable domain multi-select and a time range on every page, kept in the URL. Designed for fleets of hundreds or thousands of domains.</sub></td>
+    <td width="33%" valign="top"><b>Enforcement readiness</b><br><sub>Which sources fail alignment in the last 30 days, and how many messages a tighter policy would have quarantined or rejected.</sub></td>
+    <td width="33%" valign="top"><b>Sender identification</b><br><sub>Raw IPs become "Amazon SES" or "Google Workspace", with trends over time and every source plotted on a map.</sub></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>TLS-RPT included</b><br><sub>MTA-STS and DANE reports sit next to your DMARC data.</sub></td>
+    <td valign="top"><b>No server to run</b><br><sub>Workers, D1 and one container. <code>git clone</code>, <code>npm install</code>, <code>npm run setup</code>.</sub></td>
+    <td valign="top"><b>Configured in the browser</b><br><sub>Mailbox credentials, visibility and manual syncs live on a login-protected <code>/admin</code> page. Credentials are encrypted at rest.</sub></td>
+  </tr>
+</table>
+
+<div align="center">
+  <br>
   <img src="docs/images/tour.gif" alt="A tour of dmarc-compass: Overview, Domains, a report, the sender map and TLS reports" width="860">
-</p>
-<p align="center"><sub>All screenshots and recordings in this README use synthetic data: invented <code>.example</code> domains and documentation-range IP addresses. See <a href="#try-it-without-a-mailbox">Try it without a mailbox</a>.</sub></p>
+</div>
 
-- **Many domains, one mailbox.** Every query is domain-aware, with a searchable multi-select filter. Built with fleets of hundreds or thousands of domains in mind.
-- **Enforcement readiness.** For the last 30 days, which sources fail alignment, and how many messages would have been quarantined or rejected if you tightened policy today.
-- **Sender identification and trends.** Raw IPs become "Amazon SES", "Google Workspace" and so on. Volume and pass/fail are charted over time, and every source is plotted on a map.
-- **TLS-RPT.** MTA-STS / DANE reports in the same place.
-- **No server to run.** A fresh install is `git clone`, `npm install`, `npm run setup`.
-- **Configured from the browser.** Mailbox credentials, dashboard visibility and manual syncs live on an authenticated `/admin` page. Credentials are encrypted before they are stored.
+<br>
 
 > **Status:** early. It does what is described here and nothing more; see [Limitations](#limitations).
 
@@ -20,30 +48,122 @@ A self-hosted dashboard for your **DMARC aggregate reports** and **SMTP TLS repo
 
 <table>
   <tr>
-    <td width="50%"><a href="docs/images/overview-light.png"><img src="docs/images/overview-light.png" alt="Overview page, light theme"></a><br><sub><b>Overview.</b> KPIs against the previous period, authentication trend, enforcement readiness, top failing senders.</sub></td>
-    <td width="50%"><a href="docs/images/overview-dark.png"><img src="docs/images/overview-dark.png" alt="Overview page, dark theme"></a><br><sub><b>Dark theme.</b> Follows your system setting, with a toggle in the sidebar.</sub></td>
+    <td width="50%"><a href="docs/images/domains.png"><img src="docs/images/domains.png" alt="Domains page"></a><br><sub><b>Domains.</b> Riskiest first, with policy, status, failing volume and pass rate.</sub></td>
+    <td width="50%"><a href="docs/images/map.png"><img src="docs/images/map.png" alt="Sender map"></a><br><sub><b>Sender map.</b> Sized by volume, coloured by pass rate.</sub></td>
   </tr>
   <tr>
-    <td><a href="docs/images/domains.png"><img src="docs/images/domains.png" alt="Domains page"></a><br><sub><b>Domains.</b> Riskiest first, with policy, status, failing volume and pass rate for every domain.</sub></td>
-    <td><a href="docs/images/map.png"><img src="docs/images/map.png" alt="Sender map"></a><br><sub><b>Sender map.</b> Where your mail comes from, sized by volume and coloured by pass rate.</sub></td>
+    <td><a href="docs/images/reports.png"><img src="docs/images/reports.png" alt="DMARC reports list"></a><br><sub><b>DMARC reports.</b> Search, sort, and isolate DKIM or SPF problems.</sub></td>
+    <td><a href="docs/images/tls.png"><img src="docs/images/tls.png" alt="TLS reports"></a><br><sub><b>TLS reports.</b> Session success per domain and the latest failures.</sub></td>
   </tr>
   <tr>
-    <td><a href="docs/images/reports.png"><img src="docs/images/reports.png" alt="DMARC reports list"></a><br><sub><b>DMARC reports.</b> Search, sort, and filter to reports with DKIM or SPF problems.</sub></td>
-    <td><a href="docs/images/tls.png"><img src="docs/images/tls.png" alt="TLS reports page"></a><br><sub><b>TLS reports.</b> Session success rate per domain and the latest failures.</sub></td>
+    <td><a href="docs/images/overview-light.png"><img src="docs/images/overview-light.png" alt="Overview in the light theme"></a><br><sub><b>Light theme.</b> Dark is the default; switch from the sidebar.</sub></td>
+    <td><a href="docs/images/admin.png"><img src="docs/images/admin.png" alt="Admin page"></a><br><sub><b>Admin.</b> Setup checklist, visibility switch and mailbox settings.</sub></td>
   </tr>
 </table>
 
 ### Filters that follow you everywhere
 
-A domain multi-select and a time range sit in the top bar of every page. They live in the URL, so any view can be bookmarked or shared.
+<div align="center">
+  <img src="docs/images/filters.gif" alt="Selecting two domains and changing the time range" width="760">
+</div>
 
-<p align="center"><img src="docs/images/filters.gif" alt="Selecting two domains and changing the time range" width="760"></p>
+## Quick start
 
-### Light and dark
+**You need:** a Cloudflare account on the **Workers Paid** plan, **Docker** running locally, **Node.js 20+**, and a mailbox with **IMAP** that receives your `rua=` reports.
 
-<p align="center"><img src="docs/images/theme.gif" alt="Toggling between light and dark themes" width="760"></p>
+```bash
+git clone https://github.com/<you>/dmarc-compass.git
+cd dmarc-compass
+npm install
+npm run setup
+```
+
+`npm run setup` logs you into Cloudflare if needed, deploys the Worker (Wrangler creates the D1 database for you), sets the admin login, and generates the encryption key. Press Enter at the password prompt and a strong one is generated and shown once. `--dry-run` shows what it would do without changing anything.
+
+Then open `https://<your-worker>.workers.dev/admin`, sign in, enter your mailbox, and click **Run sync now**. The first sync takes about a minute while the container starts; after that it runs every 15 minutes.
+
+Nothing in the repository is specific to your account. Wrangler records your resource IDs in `wrangler.local.jsonc`, which is gitignored.
+
+<details>
+<summary><b>Cost</b></summary>
+
+<br>
+
+Containers are not available on the free plan. Budget roughly **$6 to $7 per month**: the $5 plan fee plus about $1.75 of container memory and disk beyond the included allowance. The container runs continuously because the 15-minute sync keeps it awake. See [current Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/).
+
+</details>
+
+<details>
+<summary><b>Point your domains at the mailbox</b></summary>
+
+<br>
+
+Each domain publishes a DMARC record. Start in monitoring mode:
+
+```
+_dmarc.example.com.  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@reports.example.net"
+```
+
+If the reporting mailbox is on a **different domain** than the domain being reported on, the receiving side requires a one-time authorization record on the mailbox's domain, for each reported domain ([RFC 7489 §7.1](https://datatracker.ietf.org/doc/html/rfc7489#section-7.1)):
+
+```
+example.com._report._dmarc.reports.example.net.  TXT  "v=DMARC1"
+```
+
+A wildcard record (`*._report._dmarc.reports.example.net`) covers every domain at once if you manage many.
+
+</details>
+
+<details>
+<summary><b>Mailbox notes (Gmail, Fastmail, Zoho, Microsoft 365)</b></summary>
+
+<br>
+
+Use an app-specific password wherever your provider offers one. To check a mailbox independently of this project, run `python3 scripts/test-imap.py`: it logs in, lists the exact folder names, and counts messages.
+
+- **Gmail / Google Workspace:** `imap.gmail.com`, port 993. Needs 2-step verification and an app password.
+- **Fastmail:** `imap.fastmail.com`, port 993, with an app password.
+- **Zoho Mail:** `imap.zoho.com` for personal accounts, `imappro.zoho.com` for custom-domain accounts. IMAP must be enabled **both** in the user's mail settings **and** in the Zoho admin console. Log in with the account's **primary** address, not an alias.
+- **Microsoft 365 / Outlook.com:** password-based IMAP is no longer offered, so this does not connect directly. The [upstream project documents a DavMail proxy](https://github.com/cry-inc/dmarc-report-viewer/tree/master/ms-365) as a workaround.
+
+Folder names are case-sensitive. Reports are often filtered into a subfolder; enter its name in the Folder field.
+
+</details>
+
+## Using it
+
+A sidebar holds the navigation and the theme toggle. The top bar carries two **global filters** that apply to every page: a searchable **domain multi-select** and a **time range** (7d, 30d, 90d, 1y, All). The default range is **90 days**. Large tables are searchable, sortable and paginated.
+
+| Page | What it is for |
+|---|---|
+| **Overview** | Totals, pass/fail trend, volume by sender, sending sources and enforcement readiness, compared with the previous period. |
+| **Domains** | One row per domain, riskiest first: policy, status (enforced, ready to tighten, needs attention), volume, pass rate, last report. |
+| **DMARC reports** | Every report, filterable by DKIM or SPF problems, with per-record detail. |
+| **TLS reports** | SMTP TLS (MTA-STS and DANE) results and failures. |
+| **Sender map** | Where your mail is being sent from. |
+| **Admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Always requires login. |
+
+**Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
+
+## Try it without a mailbox
+
+Explore the whole UI locally with synthetic data, with no Cloudflare account or IMAP mailbox. It is 22 invented `.example` domains with realistic sender mixes, a few misconfigured senders, and some TLS failures, and it is how the screenshots above were made.
+
+```bash
+npm install
+cp .dev.vars.example .dev.vars
+npm run dev          # leave running; open http://localhost:8787 once so the tables are created
+npm run demo         # in a second terminal: loads the demo data into the local database
+```
+
+Reload the page. `npm run demo` only ever writes to the local simulator (it always passes `--local`), never to a deployed database, and it replaces any reports already in the local database. Docker must be running, as for any `wrangler dev` with a container.
 
 ## How it works
+
+<details>
+<summary><b>Architecture</b></summary>
+
+<br>
 
 ```
  receivers (Google, Microsoft, ...)         your domains' rua= address
@@ -67,85 +187,9 @@ A domain multi-select and a time range sit in the top bar of every page. They li
 
 The container is the parser and holds everything in memory; it forgets it on restart. The Worker copies each new report into **D1**, which is what the dashboard reads, so your history survives container restarts. D1 tables are created and upgraded automatically on the first request after each deploy. There is no migration step.
 
-## What you need
+A report is identified by reporter + report ID + domain, enforced by a unique index. The container's own per-report hash changes whenever its mailbox settings change, so it is deliberately not used to decide whether a report has been seen.
 
-| | |
-|---|---|
-| Cloudflare account on the **Workers Paid** plan | Containers are not available on the free plan. Budget roughly **$6–7/month**: the $5 plan fee plus about $1.75 of container memory and disk beyond the included allowance. The container runs continuously because the 15-minute sync keeps it awake. Check [current Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/). |
-| **Docker** running locally | Wrangler uses it to build and push the container image at deploy time. |
-| **Node.js 20+** | |
-| A mailbox with **IMAP** | The one your domains send `rua=` reports to. |
-
-## Install
-
-```bash
-git clone https://github.com/<you>/dmarc-compass.git
-cd dmarc-compass
-npm install
-npm run setup
-```
-
-`npm run setup` logs you into Cloudflare if needed, deploys the Worker (Wrangler creates the D1 database for you), sets the admin login, and generates the encryption key. Passing `--dry-run` shows what it would do without changing anything. Setting your own password is optional: press Enter at the prompt and a strong one is generated and shown once.
-
-Then open `https://<your-worker>.workers.dev/admin`, sign in, and enter your mailbox. Click **Run sync now**. The first sync takes about a minute while the container starts; after that it runs every 15 minutes.
-
-Nothing in the repository is specific to your account. Wrangler records your resource IDs in `wrangler.local.jsonc`, which is gitignored.
-
-### Point your domains at the mailbox
-
-Each domain publishes a DMARC record. Start in monitoring mode:
-
-```
-_dmarc.example.com.  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@reports.example.net"
-```
-
-If the reporting mailbox is on a **different domain** than the domain being reported on, the receiving side requires a one-time authorization record on the mailbox's domain, for each reported domain ([RFC 7489 §7.1](https://datatracker.ietf.org/doc/html/rfc7489#section-7.1)):
-
-```
-example.com._report._dmarc.reports.example.net.  TXT  "v=DMARC1"
-```
-
-A wildcard record (`*._report._dmarc.reports.example.net`) covers every domain at once if you manage many.
-
-### Mailbox notes
-
-Use an app-specific password wherever your provider offers one. `npm`-free sanity check: `python3 scripts/test-imap.py` logs in, lists the exact folder names, and counts messages, with no dependency on this project.
-
-- **Gmail / Google Workspace:** `imap.gmail.com`, port 993. Needs 2-step verification and an app password.
-- **Fastmail:** `imap.fastmail.com`, port 993, with an app password.
-- **Zoho Mail:** `imap.zoho.com` for personal accounts, `imappro.zoho.com` for custom-domain accounts. IMAP must be enabled **both** in the user's mail settings **and** in the Zoho admin console. Log in with the account's **primary** address, not an alias.
-- **Microsoft 365 / Outlook.com:** password-based IMAP is no longer offered, so this does not connect directly. The [upstream project documents a DavMail proxy](https://github.com/cry-inc/dmarc-report-viewer/tree/master/ms-365) as a workaround.
-
-Folder names are case-sensitive. Reports are often filtered into a subfolder; enter its name in the Folder field.
-
-## Using it
-
-A sidebar holds the navigation, with a light/dark theme toggle. The top bar carries two **global filters** that apply to every page and live in the URL, so any view can be bookmarked or shared: a searchable **domain multi-select** and a **time range** (7d, 30d, 90d, 1y, All). The default range is **90 days**; choose *All* for the full history. Large tables are searchable, sortable and paginated.
-
-| Page | What it's for |
-|---|---|
-| **Overview** | Totals, pass/fail trend, volume by sender, sending sources, enforcement readiness. Compares against the previous period when a fixed range is selected. |
-| **Domains** | One row per domain, riskiest first: policy, status (enforced, ready to tighten, needs attention), volume, pass rate, last report. Click a row to drill in. |
-| **DMARC reports** | Every report, filterable by DKIM/SPF problems, with per-record detail. |
-| **TLS reports** | SMTP TLS (MTA-STS / DANE) results and failures. |
-| **Sender map** | Where your mail is being sent from. |
-| **/admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Linked at the bottom of the sidebar; always requires login. |
-
-### Who can see the dashboard
-
-By default **every page requires the admin login**. In `/admin` you can switch on *"Allow anyone with the link to view the dashboard"*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that's acceptable before enabling it. `/admin` is never public.
-
-## Try it without a mailbox
-
-You can explore the whole UI locally with synthetic data, no Cloudflare account or IMAP mailbox needed. The data is 22 invented `.example` domains with realistic sender mixes, a few misconfigured senders, and some TLS failures. It is also how the screenshots above were made.
-
-```bash
-npm install
-npm run dev          # leave running; open http://localhost:8787 once so the tables are created
-npm run demo         # in a second terminal: loads the demo data into the local database
-```
-
-Reload the page. `npm run demo` only ever writes to the local simulator (it always passes `--local`), never to a deployed database, and it replaces any reports already in the local database. Copy `.dev.vars.example` to `.dev.vars` before the first `npm run dev` (the app will not start without an admin login configured). Docker must be running, as for any `wrangler dev` with a container.
+</details>
 
 ## Operating it
 
@@ -156,7 +200,9 @@ npm run tail        # live logs
 npm run typecheck
 ```
 
-**Updating:** `git pull && npm install && npm run deploy`. **The dashboard is empty:** open `/admin` and read *Setup status*. It names what is missing. If the mailbox looks right but nothing arrives, run `scripts/test-imap.py` to separate a mailbox problem from a deployment problem.
+**Updating:** `git pull && npm install && npm run deploy`.
+
+**The dashboard is empty:** open **Admin** and read *Setup status*; it names what is missing. If the mailbox looks right but nothing arrives, run `scripts/test-imap.py` to separate a mailbox problem from a deployment problem.
 
 **Uninstalling:** `npx wrangler delete -c wrangler.local.jsonc`, then delete the D1 database and the container application from the Cloudflare dashboard.
 
@@ -173,18 +219,14 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 ## Limitations
 
 - **One container instance.** Fine for hundreds of domains' worth of reports; not horizontally scaled.
-- **No forensic (RUF) reports.** The upstream parser doesn't support them, and large receivers have mostly stopped sending them.
+- **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.
 - **No alerting or scheduled reports yet** (the daily cron trigger is reserved for it).
 
-## Duplicate reports
-
-A report is identified by reporter + report ID + domain, enforced by a unique index. The container's own per-report hash changes whenever its mailbox settings change, so it is deliberately not used to decide whether a report has been seen. Upgrading from an earlier version removes any duplicate rows automatically (the earliest copy is kept).
-
 ## Roadmap
 
-Alerting (new sender, pass-rate drop) to Slack/email/webhook · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export.
+Alerting (new sender, pass-rate drop) to Slack, email or webhook · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export.
 
 ## Contributing
 

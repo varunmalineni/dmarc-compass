@@ -295,5 +295,6 @@ code { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-si
 }
 /* leaflet: keep its high z-index panes from covering the dropdowns */
 #map { position: relative; z-index: 0; isolation: isolate; height: 520px; border-radius: 10px; }
+.leaflet-container { background: var(--surface-2); }
 :root[data-theme="dark"] .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88); }
 `;
