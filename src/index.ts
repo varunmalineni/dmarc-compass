@@ -1,5 +1,5 @@
 import { Container, getContainer } from "@cloudflare/containers";
-import { syncReports } from "./sync";
+import { syncReports, callContainer } from "./sync";
 import { loadOverview, SOURCE_SORT_KEYS } from "./dashboard-data";
 import { renderOverviewBody } from "./dashboard-html";
 import { loadReportsList, loadReportDetail, REPORT_SORT_KEYS, REPORT_FILTERS, type ReportFilter } from "./reports-data";
@@ -168,6 +168,58 @@ function jsonError(message: string, status: number): Response {
   return new Response(message + "\n", { status });
 }
 
+/** Raw XML / JSON of one report, straight from the container's copy. Always
+ * behind the admin login, never the public-dashboard switch: the XML is
+ * third-party content and includes the reporter's contact details.
+ *
+ * D1 stores the container's hash from when the report was synced, but that
+ * hash changes whenever the container's mailbox settings do, so the report is
+ * looked up in the container by its identity (reporter, report ID, domain). */
+async function handleRawReport(request: Request, env: Env, hash: string, format: "xml" | "json"): Promise<Response> {
+  if (!hasValidBasicAuth(request, env)) return challenge(env);
+
+  const row = await env.DB.prepare("SELECT org_name, report_id, domain FROM dmarc_reports WHERE hash = ?")
+    .bind(hash)
+    .first<{ org_name: string; report_id: string; domain: string }>();
+  if (!row) return new Response("Report not found\n", { status: 404 });
+
+  const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
+  let current: string | undefined;
+  try {
+    const list = await callContainer(container, "/dmarc-reports", env);
+    if (!list.ok) return new Response(`The container could not list reports (${list.status}).\n`, { status: 502 });
+    const headers = await list.json<Array<{ hash: string; id: string; org: string; domain: string }>>();
+    current = headers.find(
+      (h) => h.org === row.org_name && h.id === row.report_id && h.domain.toLowerCase() === row.domain.toLowerCase(),
+    )?.hash;
+  } catch (err) {
+    return new Response(`The container is not reachable yet: ${err instanceof Error ? err.message : err}\n`, { status: 502 });
+  }
+  if (!current) {
+    return new Response(
+      "The container no longer has this report, so the original file is unavailable. " +
+        "The parsed data in this dashboard is unaffected. This happens if the email was deleted or moved out of the mailbox folder.\n",
+      { status: 404 },
+    );
+  }
+
+  const upstream = await callContainer(container, `/dmarc-reports/${encodeURIComponent(current)}/${format}`, env);
+  if (!upstream.ok) return new Response(`The container returned ${upstream.status}.\n`, { status: 502 });
+
+  const name = `${row.org_name}_${row.report_id}`.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
+  const download = new URL(request.url).searchParams.get("download") === "1";
+  return new Response(upstream.body, {
+    headers: {
+      // Plain text, never application/xml: a crafted report must not be rendered as markup in our origin.
+      "content-type": format === "json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+      "content-disposition": `${download ? "attachment" : "inline"}; filename="${name}.${format}"`,
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "cache-control": "private, no-store",
+    },
+  });
+}
+
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
   if (!hasValidBasicAuth(request, env)) return challenge(env);
 
@@ -257,6 +309,9 @@ export default {
     await ensureSchema(env.DB);
 
     if (pathname === "/admin") return handleAdmin(request, env, url);
+
+    const rawMatch = pathname.match(/^\/reports\/([^/]+)\/(xml|json)$/);
+    if (rawMatch) return handleRawReport(request, env, decodeURIComponent(rawMatch[1]), rawMatch[2] as "xml" | "json");
 
     // Everything below is the read-only dashboard, served from D1.
     const blocked = await dashboardGate(request, env);

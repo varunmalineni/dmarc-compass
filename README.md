@@ -138,7 +138,7 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 |---|---|
 | **Overview** | Totals, pass/fail trend, volume by sender, sending sources and enforcement readiness, compared with the previous period. |
 | **Domains** | One row per domain, riskiest first: policy, status (enforced, ready to tighten, needs attention), volume, pass rate, last report. |
-| **DMARC reports** | Every report, filterable by DKIM or SPF problems, with per-record detail. |
+| **DMARC reports** | Every report, filterable by DKIM or SPF problems, with per-record detail and the original XML and JSON (view or download). |
 | **TLS reports** | SMTP TLS (MTA-STS and DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
 | **Admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Always requires login. |
@@ -211,7 +211,7 @@ npm run typecheck
 - The admin login is a Worker secret (`ADMIN_USER` / `ADMIN_PASSWORD`) compared on every request to `/admin`. It is HTTP Basic Auth, so always use the HTTPS `workers.dev` or custom-domain URL.
 - Mailbox credentials entered on `/admin` are encrypted with AES-GCM using `CONFIG_ENCRYPTION_KEY`, a write-only Worker secret, before they reach D1. They are never sent back to the browser. **Do not rotate or lose that key without re-entering the mailbox password**: the stored value can no longer be decrypted.
 - State-changing requests from `/admin` require a custom request header that a cross-site form cannot send (CSRF protection).
-- The container is only reachable through the Worker; nothing on the public URL is proxied to it.
+- The container is only reachable through the Worker. The one thing the Worker fetches from it on request is the original report XML/JSON, and that always requires the admin login, even when the dashboard is public. Files are served as plain text with a restrictive `Content-Security-Policy`.
 - The public-dashboard switch defaults to **off**.
 
 Found a vulnerability? Please report it privately through GitHub's *Security → Report a vulnerability* rather than a public issue.
@@ -219,6 +219,7 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 ## Limitations
 
 - **One container instance.** Fine for hundreds of domains' worth of reports; not horizontally scaled.
+- **Original XML/JSON comes from the container**, which re-reads your mailbox. If a report email has been deleted or moved out of the configured folder, the parsed data stays in the dashboard but the original file is no longer available.
 - **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.

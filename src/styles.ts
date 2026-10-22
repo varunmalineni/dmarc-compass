@@ -270,6 +270,8 @@ code { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-si
 .kv td { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .kv tr:last-child td { border-bottom: none; }
 .kv td:first-child { color: var(--muted); font-weight: 600; width: 190px; }
+.raw-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+.raw-links .btn { padding: 6px 12px; font-size: 12.5px; text-decoration: none; }
 .back { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); text-decoration: none; font-weight: 600; font-size: 13px; margin-bottom: 14px; }
 .foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
 

@@ -8,7 +8,7 @@ export interface SyncEnv extends AdminEnv {
 }
 
 /** Makes an authenticated internal request against the dmarc-report-viewer container. */
-async function callContainer(
+export async function callContainer(
   container: { fetch(req: Request): Promise<Response> },
   path: string,
   env: SyncEnv,

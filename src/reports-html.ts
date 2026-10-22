@@ -74,6 +74,7 @@ export function renderReportsBody(
 }
 
 export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
+  const rawBase = `/reports/${encodeURIComponent(d.hash)}`;
   const records = d.records
     .map(
       (r) => `<tr>
@@ -100,7 +101,15 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
       <tr><td>Domain</td><td>${escapeHtml(d.domain)}</td></tr>
       <tr><td>Period</td><td>${fmtDate(d.dateBegin)} &ndash; ${fmtDate(d.dateEnd)}</td></tr>
       <tr><td>Published policy</td><td><code>p=${escapeHtml(d.policy)}</code>${d.pct !== null ? ` &middot; pct=${d.pct}` : ""}</td></tr>
-    </table>`,
+    </table>
+    <div class="raw-links">
+      <span class="muted small">Original report</span>
+      <a class="btn secondary" href="${rawBase}/xml" target="_blank" rel="noopener">View XML</a>
+      <a class="btn secondary" href="${rawBase}/json" target="_blank" rel="noopener">View JSON</a>
+      <a class="btn secondary" href="${rawBase}/xml?download=1">Download XML</a>
+      <a class="btn secondary" href="${rawBase}/json?download=1">Download JSON</a>
+    </div>
+    <p class="hint" style="margin:10px 0 0">Raw files come from the container and always ask for the admin login.</p>`,
   )}
   ${panel(
     `Records (${fmtNumber(d.records.length)})`,
