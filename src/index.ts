@@ -12,6 +12,18 @@ import {
   type ConfigKey,
 } from "./settings-data";
 import { renderAdmin } from "./admin-html";
+import {
+  addWebhook,
+  getNotifyView,
+  previewAlerts,
+  rememberBaseUrl,
+  removeWebhook,
+  runNotifications,
+  saveNotifyConfig,
+  sendDigestNow,
+  testWebhook,
+  updateWebhook,
+} from "./notify";
 import { loadDomains, loadChrome, DOMAIN_SORT_KEYS } from "./domains-data";
 import { renderDomainsBody } from "./domains-html";
 import { loadTls } from "./tls-data";
@@ -35,6 +47,8 @@ interface Env extends AdminEnv {
   IMAP_USER?: string;
   IMAP_PASSWORD?: string;
   IMAP_FOLDER?: string;
+  /** Optional: Slack webhook URL as a Worker secret (it can also be saved from /admin). */
+  SLACK_WEBHOOK_URL?: string;
 }
 
 const HTML = { "content-type": "text/html; charset=utf-8" };
@@ -161,6 +175,9 @@ async function runSync(env: Env): Promise<Awaited<ReturnType<typeof syncReports>
   } catch (err) {
     await recordSync(env.DB, false, String(err instanceof Error ? err.message : err).slice(0, 200));
     throw err;
+  } finally {
+    // Alerts and the digest; never throws, and a Slack problem never fails a sync.
+    await runNotifications(env);
   }
 }
 
@@ -240,6 +257,48 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       }
     }
 
+    // Webhook and notification-setting changes all answer with the fresh list,
+    // so the page can redraw without a reload.
+    const notifyState = async () => {
+      const view = await getNotifyView(env);
+      return Response.json({ hooks: view.hooks, nextDigestAt: view.nextDigestAt });
+    };
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    const optBool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+
+    if (body.action === "notify_state") return notifyState();
+    if (body.action === "notify_save") {
+      const res = await saveNotifyConfig(env, body.config);
+      return res.ok ? notifyState() : jsonError(res.error, 400);
+    }
+    if (body.action === "webhook_add") {
+      const res = await addWebhook(env, { url: body.url, name: body.name, alerts: optBool(body.alerts), digest: optBool(body.digest) });
+      return res.ok ? notifyState() : jsonError(res.error, 400);
+    }
+    if (body.action === "webhook_update") {
+      const res = await updateWebhook(env, str(body.id), {
+        name: typeof body.name === "string" ? body.name : undefined,
+        alerts: optBool(body.alerts),
+        digest: optBool(body.digest),
+      });
+      return res.ok ? notifyState() : jsonError(res.error, 400);
+    }
+    if (body.action === "webhook_remove") {
+      const res = await removeWebhook(env, str(body.id));
+      return res.ok ? notifyState() : jsonError(res.error, 400);
+    }
+    if (body.action === "webhook_test") {
+      const res = await testWebhook(env, str(body.id));
+      return res.ok ? notifyState() : jsonError(res.error, 502);
+    }
+    if (body.action === "digest_now") {
+      const res = await sendDigestNow(env);
+      return res.ok ? notifyState() : jsonError(res.error, 502);
+    }
+    if (body.action === "notify_preview") {
+      return Response.json(await previewAlerts(env));
+    }
+
     if (typeof body.public_dashboard === "boolean") {
       await setDashboardPublic(env.DB, body.public_dashboard);
       return new Response("OK\n");
@@ -263,7 +322,9 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     return new Response("OK\n");
   }
 
-  const [imap, overridden, passwordRow, schemaVersion, counts, lastSync, publicDashboard] = await Promise.all([
+  await rememberBaseUrl(env.DB, url.origin);
+
+  const [imap, overridden, passwordRow, schemaVersion, counts, lastSync, publicDashboard, notify] = await Promise.all([
     getEffectiveImapConfig(env),
     getOverriddenKeys(env.DB),
     env.DB.prepare("SELECT updated_at FROM settings WHERE key = 'IMAP_PASSWORD'").first<{ updated_at: number }>(),
@@ -276,10 +337,12 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     ).first<{ reports: number; tls_reports: number; domains: number }>(),
     getLastSync(env.DB),
     isDashboardPublic(env.DB),
+    getNotifyView(env),
   ]);
 
   return new Response(
     renderAdmin({
+      notify,
       imapHost: imap.IMAP_HOST,
       imapUser: imap.IMAP_USER,
       imapFolder: imap.IMAP_FOLDER,
@@ -363,12 +426,12 @@ export default {
     return new Response("Not found\n", { status: 404 });
   },
 
-  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     await ensureSchema(env.DB);
-    if (event.cron !== "*/15 * * * *") return; // the daily trigger is reserved for alerting
 
     if (!getAdminCreds(env) || !isImapConfigured(await getEffectiveImapConfig(env))) {
       console.log("sync skipped: admin login or mailbox not configured yet");
+      await runNotifications(env);
       return;
     }
     try {

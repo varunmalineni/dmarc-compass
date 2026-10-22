@@ -14,7 +14,8 @@
     "deploy": "node scripts/wrangler.mjs deploy",
     "tail": "node scripts/wrangler.mjs tail",
     "demo": "node scripts/seed-demo.mjs --apply",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/*.test.ts\""
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"

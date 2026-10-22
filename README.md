@@ -29,9 +29,9 @@ Point your domains' `rua=` address at one mailbox and see who is sending as you,
     <td width="33%" valign="top"><b>Sender identification</b><br><sub>Raw IPs become "Amazon SES" or "Google Workspace", with trends over time and every source plotted on a map.</sub></td>
   </tr>
   <tr>
+    <td valign="top"><b>Alerts and a digest</b><br><sub>Slack-compatible alerts for new failing senders, pass-rate drops, policy changes and sync problems, plus a digest on a schedule you choose.</sub></td>
     <td valign="top"><b>TLS-RPT included</b><br><sub>MTA-STS and DANE reports sit next to your DMARC data.</sub></td>
-    <td valign="top"><b>No server to run</b><br><sub>Workers, D1 and one container. <code>git clone</code>, <code>npm install</code>, <code>npm run setup</code>.</sub></td>
-    <td valign="top"><b>Configured in the browser</b><br><sub>Mailbox credentials, visibility and manual syncs live on a login-protected <code>/admin</code> page. Credentials are encrypted at rest.</sub></td>
+    <td valign="top"><b>No server to run</b><br><sub>Workers, D1 and one container, configured from a login-protected <code>/admin</code> page. <code>git clone</code>, <code>npm install</code>, <code>npm run setup</code>.</sub></td>
   </tr>
 </table>
 
@@ -145,6 +145,31 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 
 **Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
 
+## Notifications
+
+Alerts and a periodic digest go to one or more Slack-compatible **incoming webhooks** (Slack, Mattermost, and others that accept the same format). Nothing is sent until you add one.
+
+1. In Slack, create an *Incoming Webhook* for the channel you want and copy its URL.
+2. Open **Admin → Notifications**, give it an optional **nickname** (for example `#dmarc-alerts`), paste the URL, and press **Add webhook**.
+3. Press **Test** on its row to confirm a message arrives.
+
+Each webhook is a row showing its nickname, a masked form of its URL, whether it receives **Alerts** and/or the **Digest** (so security alerts and a management digest can go to different channels), and how its last delivery went. Rename it, change what it receives, **Test** it or **Remove** it right from the row. You can add up to 10. A webhook supplied as a `SLACK_WEBHOOK_URL` Worker secret appears as a read-only row.
+
+**Alert rules.** Checked after every sync. Each event is reported once, and several alerts from one sync arrive as one message.
+
+| Rule | Fires when | Default |
+|---|---|---|
+| **New failing sender** | A source fails DMARC for a domain it was not seen on before | at least 20 failing messages |
+| **Pass rate dropped** | A domain's pass rate over the last 7 days is lower than the 7 days before | 5 points, at least 100 messages in each week |
+| **Policy changed** | A domain's published `p=` or `pct=` changed (stricter or relaxed) | on |
+| **Sync problem** | Syncing is failing or has stopped; a note is sent when it recovers | 90 minutes without a successful sync |
+
+**Digest.** Off by default. Choose every day, every week, every month, or every *N* days, plus the time and time zone. It covers the last complete days of that period: messages and pass rate against the period before, domain status, the most failing domains, policy changes and new failing senders. Digests are sent within 15 minutes of the chosen time; if a run is missed it is sent once on the next run.
+
+**Preview alerts** shows what the rules would have reported over the last 7 days without sending anything, and **Send digest now** sends one immediately.
+
+If every webhook that should receive an alert is unreachable, nothing is lost: an alert is only marked as sent once at least one webhook accepts it, so it is retried on the next run. If one of several is down, the others still deliver, and the failure is shown on that row. A notification problem never fails a sync.
+
 ## Try it without a mailbox
 
 Explore the whole UI locally with synthetic data, with no Cloudflare account or IMAP mailbox. It is 22 invented `.example` domains with realistic sender mixes, a few misconfigured senders, and some TLS failures, and it is how the screenshots above were made.
@@ -198,6 +223,7 @@ npm run deploy      # ship changes; also upgrades the database schema on first r
 npm run dev         # local development (copy .dev.vars.example to .dev.vars first)
 npm run tail        # live logs
 npm run typecheck
+npm test            # unit tests (schedule math, settings, message escaping)
 ```
 
 **Updating:** `git pull && npm install && npm run deploy`.
@@ -212,6 +238,8 @@ npm run typecheck
 - Mailbox credentials entered on `/admin` are encrypted with AES-GCM using `CONFIG_ENCRYPTION_KEY`, a write-only Worker secret, before they reach D1. They are never sent back to the browser. **Do not rotate or lose that key without re-entering the mailbox password**: the stored value can no longer be decrypted.
 - State-changing requests from `/admin` require a custom request header that a cross-site form cannot send (CSRF protection).
 - The container is only reachable through the Worker. The one thing the Worker fetches from it on request is the original report XML/JSON, and that always requires the admin login, even when the dashboard is public. Files are served as plain text with a restrictive `Content-Security-Policy`.
+- Webhook URLs are credentials: they are stored encrypted (as one list) like the mailbox password, never shown back in the browser, and never written to logs or error messages. Only a masked form is displayed.
+- Alert text includes domain and reporter names taken from third-party reports, so everything sent to Slack is escaped. A crafted report cannot inject links or mentions (such as `@channel`).
 - The public-dashboard switch defaults to **off**.
 
 Found a vulnerability? Please report it privately through GitHub's *Security → Report a vulnerability* rather than a public issue.
@@ -223,15 +251,15 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 - **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.
-- **No alerting or scheduled reports yet** (the daily cron trigger is reserved for it).
+- **Alerts cover DMARC and sync health, not TLS failures yet**, and are delivered only to Slack-compatible webhooks (no direct email).
 
 ## Roadmap
 
-Alerting (new sender, pass-rate drop) to Slack, email or webhook · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export.
+Email delivery and TLS failure alerts · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export.
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `npm run typecheck` before submitting. Schema changes are made by **appending** a migration in `src/migrations.ts`; never edit one that has shipped.
+Issues and pull requests are welcome. Run `npm run typecheck` and `npm test` before submitting. Schema changes are made by **appending** a migration in `src/migrations.ts`; never edit one that has shipped.
 
 ## License
 

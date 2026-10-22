@@ -153,6 +153,7 @@ main { width: 100%; max-width: 1380px; margin: 0 auto; padding: 24px 32px 56px; 
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 .chip[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+[hidden] { display: none !important; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: none; cursor: pointer;
   background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-family: inherit;

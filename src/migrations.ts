@@ -141,6 +141,17 @@ const MIGRATIONS: Migration[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS ux_tls_reports_identity ON tls_reports(org_name, report_id)`,
     ],
   },
+  {
+    id: 4,
+    name: "indexes for notifications",
+    // Alerts look at what was ingested since the last run, and at a domain's
+    // recent report history. Without these both would scan every report.
+    statements: [
+      `CREATE INDEX IF NOT EXISTS idx_reports_inserted ON dmarc_reports(inserted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_reports_domain_date ON dmarc_reports(domain, date_begin)`,
+      `CREATE INDEX IF NOT EXISTS idx_records_report ON dmarc_records(report_hash)`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;
