@@ -49,9 +49,16 @@ async function syncDmarcReports(
   }
   const headers: ReportHeader[] = await listRes.json();
 
-  const existing = await env.DB.prepare("SELECT hash FROM dmarc_reports").all<{ hash: string }>();
-  const knownHashes = new Set(existing.results.map((r) => r.hash));
-  const missing = headers.filter((h) => !knownHashes.has(h.hash));
+  // "Already have it" is decided by the report's identity (reporter, report ID,
+  // domain), never by the container's hash: that hash is not stable across
+  // container restarts, which previously caused every report to be re-ingested.
+  const existing = await env.DB.prepare("SELECT org_name, report_id, domain FROM dmarc_reports").all<{
+    org_name: string;
+    report_id: string;
+    domain: string;
+  }>();
+  const known = new Set(existing.results.map((r) => `${r.org_name}\u0000${r.report_id}\u0000${r.domain.toLowerCase()}`));
+  const missing = headers.filter((h) => !known.has(`${h.org}\u0000${h.id}\u0000${h.domain.toLowerCase()}`));
 
   let newRecords = 0;
   const newIps = new Set<string>();
@@ -64,7 +71,7 @@ async function syncDmarcReports(
     }
     const report: DmarcReportJson = await jsonRes.json();
 
-    await env.DB.prepare(
+    const inserted = await env.DB.prepare(
       `INSERT OR IGNORE INTO dmarc_reports
          (hash, report_id, org_name, domain, date_begin, date_end, policy_p, policy_pct, inserted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -81,6 +88,8 @@ async function syncDmarcReports(
         Math.floor(Date.now() / 1000),
       )
       .run();
+    // Ignored by the unique identity index: it's a copy we already hold.
+    if (!inserted.meta.changes) continue;
 
     for (const record of report.record) {
       await env.DB.prepare(
@@ -121,9 +130,12 @@ async function syncTlsReports(
   }
   const headers: TlsReportHeader[] = await listRes.json();
 
-  const existing = await env.DB.prepare("SELECT hash FROM tls_reports").all<{ hash: string }>();
-  const knownHashes = new Set(existing.results.map((r) => r.hash));
-  const missing = headers.filter((h) => !knownHashes.has(h.hash));
+  const existing = await env.DB.prepare("SELECT org_name, report_id FROM tls_reports").all<{
+    org_name: string;
+    report_id: string;
+  }>();
+  const known = new Set(existing.results.map((r) => `${r.org_name}\u0000${r.report_id}`));
+  const missing = headers.filter((h) => !known.has(`${h.org}\u0000${h.id}`));
 
   const newIps = new Set<string>();
 
@@ -137,12 +149,13 @@ async function syncTlsReports(
     const dateBegin = Math.floor(new Date(report.date_range.start_datetime).getTime() / 1000);
     const dateEnd = Math.floor(new Date(report.date_range.end_datetime).getTime() / 1000);
 
-    await env.DB.prepare(
+    const insertedTls = await env.DB.prepare(
       `INSERT OR IGNORE INTO tls_reports (hash, report_id, org_name, date_begin, date_end, inserted_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
       .bind(header.hash, report.report_id, report.organization_name, dateBegin, dateEnd, Math.floor(Date.now() / 1000))
       .run();
+    if (!insertedTls.meta.changes) continue;
 
     for (const policyResult of report.policies) {
       const inserted = await env.DB.prepare(

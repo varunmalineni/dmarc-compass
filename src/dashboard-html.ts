@@ -1,231 +1,226 @@
-import type { DashboardData, SourceRow } from "./dashboard-data";
-import { RANGE_OPTIONS } from "./dashboard-data";
-import { escapeHtml, fmtDate, fmtNumber, passRateBadgeClass, issueBadgesHtml, navHtml, htmlHead, domainMultiSelectHtml, BRAND } from "./shared-ui";
+import type { Overview, SourceRow } from "./dashboard-data";
+import { SOURCES_PAGE_SIZE } from "./dashboard-data";
+import type { Filters, ListState } from "./filters";
+import { rangeLabel } from "./filters";
+import {
+  escapeHtml,
+  fmtDate,
+  fmtNumber,
+  fmtPct,
+  rateCell,
+  rateTone,
+  issueBadges,
+  emptyState,
+  panel,
+  pagination,
+  sortTh,
+  searchForm,
+  urlWith,
+  safeJson,
+} from "./shared-ui";
 
-function sourceRowHtml(r: SourceRow): string {
-  const rateClass = passRateBadgeClass(r.pass_rate);
-  const ptrLabel = r.ptr_hostname ? escapeHtml(r.ptr_hostname) : "&mdash;";
-  return `
-    <tr>
-      <td><span class="esp-name">${escapeHtml(r.esp_name)}</span></td>
-      <td><code>${escapeHtml(r.source_ip)}</code><div class="ptr">${ptrLabel}</div></td>
-      <td class="num">${fmtNumber(r.total_count)}</td>
-      <td>
-        <div class="rate-cell">
-          <div class="rate-bar"><div class="rate-bar-fill ${rateClass}" style="width:${Math.min(100, r.pass_rate).toFixed(1)}%"></div></div>
-          <span class="rate-label ${rateClass}">${r.pass_rate.toFixed(1)}%</span>
-        </div>
-      </td>
-      <td>${issueBadgesHtml(r.issues) || '<span class="muted">&mdash;</span>'}</td>
-      <td class="muted">${fmtDate(r.last_seen)}</td>
-    </tr>`;
+const ESP_COLORS = ["#6366f1", "#0ea5e9", "#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#94a3b8"];
+
+function delta(cur: number, prev: number | null, kind: "pct" | "pp"): string {
+  if (prev === null) return `<span class="muted">Select a fixed range to compare</span>`;
+  if (kind === "pct") {
+    if (prev === 0) return `<span class="muted">No earlier data</span>`;
+    const d = ((cur - prev) / prev) * 100;
+    const cls = Math.abs(d) < 0.5 ? "flat" : "flat";
+    const arrow = d > 0.5 ? "&#9650;" : d < -0.5 ? "&#9660;" : "&ndash;";
+    return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(0)}%</span><span>vs previous period</span>`;
+  }
+  const d = cur - prev;
+  const cls = Math.abs(d) < 0.05 ? "flat" : d > 0 ? "up" : "down";
+  const arrow = d > 0.05 ? "&#9650;" : d < -0.05 ? "&#9660;" : "&ndash;";
+  return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)} pts</span><span>vs previous period</span>`;
 }
 
-export function renderDashboard(data: DashboardData, allDomains: string[]): string {
-  const selected = data.domainFilter ?? [];
-  const navDomain = selected.length === 1 ? selected[0] : null;
-  const headerTitle =
-    selected.length === 0
-      ? `All Domains (${fmtNumber(data.totals.domains)})`
-      : selected.length === 1
-        ? selected[0]
-        : `${selected.length} Domains Selected`;
+function share(pct: number): string {
+  return pct > 0 && pct < 1 ? "<1%" : fmtPct(pct, 0);
+}
 
-  const totalMessages = data.totals.messages;
-  const totalPassed = data.trend.reduce((sum, p) => sum + p.passed, 0);
-  const totalFailed = data.trend.reduce((sum, p) => sum + p.failed, 0);
-  const overallRate = totalPassed + totalFailed > 0 ? (totalPassed / (totalPassed + totalFailed)) * 100 : 0;
+function sourceRow(r: SourceRow): string {
+  return `<tr>
+    <td><div class="esp">${escapeHtml(r.esp)}</div></td>
+    <td><code>${escapeHtml(r.ip)}</code>${r.ptr ? `<div class="ptr">${escapeHtml(r.ptr)}</div>` : ""}</td>
+    <td class="num">${fmtNumber(r.domains)}</td>
+    <td class="num">${fmtNumber(r.total)}</td>
+    <td>${rateCell(r.rate)}</td>
+    <td>${issueBadges(r.issues) || '<span class="muted">&ndash;</span>'}</td>
+    <td class="muted small">${fmtDate(r.lastSeen)}</td>
+  </tr>`;
+}
 
-  const enf = data.enforcement;
-  const nextPolicy = enf.currentPolicy === "none" ? "quarantine" : enf.currentPolicy === "quarantine" ? "reject" : null;
-  const failPct = enf.totalMessages > 0 ? (enf.failingMessages / enf.totalMessages) * 100 : 0;
-  const dispositionHtml =
-    enf.totalMessages > 0
-      ? `<div class="disposition-note">
-           If set to <code>p=quarantine</code> today: <strong>${fmtNumber(enf.failingMessages)}</strong> message${enf.failingMessages === 1 ? "" : "s"}
-           (${failPct.toFixed(1)}% of ${fmtNumber(enf.totalMessages)} over the last ${enf.windowDays} days) would have been quarantined.
-           At <code>p=reject</code>, the same messages would have been rejected outright.
-         </div>`
-      : "";
+function enforcementPanel(data: Overview, multi: boolean): string {
+  const e = data.enforcement;
+  if (e.domainsWithTraffic === 0) {
+    return panel(
+      "Enforcement readiness",
+      emptyState("Not enough recent data", `No reports covering the last ${e.windowDays} days for this selection yet.`),
+    );
+  }
 
-  const verdictHtml = enf.ready
-    ? `<div class="verdict verdict-good">
-         <div class="verdict-icon">&#10003;</div>
-         <div>
-           <div class="verdict-title">Ready to tighten enforcement</div>
-           <div class="verdict-body">Every source seen in the last ${enf.windowDays} days passed DMARC alignment 100% of the time.
-             ${nextPolicy ? `Current policy is <code>p=${escapeHtml(enf.currentPolicy ?? "")}</code> &mdash; safe to consider moving to <code>p=${nextPolicy}</code>.` : `Already at the strictest policy (<code>p=reject</code>).`}
-           </div>
-         </div>
+  const allReady = e.attention === 0 && e.nearly === 0;
+  const tone = allReady ? "good" : e.attention === 0 ? "warn" : "bad";
+  const icon = allReady ? "&#10003;" : "!";
+  const title = allReady
+    ? multi
+      ? "Every domain is ready to tighten"
+      : "Ready to tighten enforcement"
+    : multi
+      ? `${e.ready} of ${e.domainsWithTraffic} domains ready`
+      : e.attention === 0
+        ? "Nearly ready"
+        : "Not ready yet";
+  const body = allReady
+    ? `No message failed DMARC alignment in the last ${e.windowDays} days.`
+    : multi
+      ? `${e.attention} need attention, ${e.nearly} have under 1% failing. Resolve the senders below first.`
+      : `${fmtPct((e.failingMessages / Math.max(1, e.totalMessages)) * 100)} of messages failed alignment in the last ${e.windowDays} days.`;
+
+  const mix = e.policyMix;
+  const mixTotal = mix.none + mix.quarantine + mix.reject;
+  const seg = (n: number, color: string) => (n ? `<span style="width:${(n / mixTotal) * 100}%;background:${color}"></span>` : "");
+  const mixHtml = mixTotal
+    ? `<div class="list-title">Published policy${multi ? " (domains)" : ""}</div>
+       <div class="dist" role="img" aria-label="Policy mix">${seg(mix.none, "var(--warn-bar)")}${seg(mix.quarantine, "var(--accent)")}${seg(mix.reject, "var(--good-bar)")}</div>
+       <div class="dist-legend">
+         <span><i style="background:var(--warn-bar)"></i>none ${mix.none}</span>
+         <span><i style="background:var(--accent)"></i>quarantine ${mix.quarantine}</span>
+         <span><i style="background:var(--good-bar)"></i>reject ${mix.reject}</span>
        </div>`
-    : `<div class="verdict verdict-bad">
-         <div class="verdict-icon">&#33;</div>
-         <div>
-           <div class="verdict-title">Not ready yet</div>
-           <div class="verdict-body">${enf.blockingSources.length} source${enf.blockingSources.length === 1 ? "" : "s"} failed alignment at least once in the last ${enf.windowDays} days. Fix or authorize these before moving ${enf.currentPolicy ? `past <code>p=${escapeHtml(enf.currentPolicy)}</code>` : "to a stricter policy"}.</div>
-         </div>
-       </div>`;
-
-  const blockingListHtml = enf.blockingSources.length
-    ? `<ul class="blocking-list">
-        ${enf.blockingSources
-          .sort((a, b) => a.pass_rate - b.pass_rate)
-          .map(
-            (s) =>
-              `<li><span class="esp-name">${escapeHtml(s.esp_name)}</span> <code>${escapeHtml(s.source_ip)}</code> &mdash; <span class="${passRateBadgeClass(s.pass_rate)}">${s.pass_rate.toFixed(1)}% pass</span> ${issueBadgesHtml(s.issues)}</li>`,
-          )
-          .join("")}
-      </ul>`
     : "";
 
-  const trendLabels = JSON.stringify(data.trend.map((p) => p.day));
-  const trendPassed = JSON.stringify(data.trend.map((p) => p.passed));
-  const trendFailed = JSON.stringify(data.trend.map((p) => p.failed));
+  const sim =
+    e.failingMessages > 0
+      ? `<div class="note" style="margin-top:14px">At <code>p=quarantine</code> today, <strong>${fmtNumber(e.failingMessages)}</strong> of ${fmtNumber(e.totalMessages)} messages (${fmtPct((e.failingMessages / e.totalMessages) * 100)}) from the last ${e.windowDays} days would have been quarantined; at <code>p=reject</code>, rejected.</div>`
+      : "";
 
-  const ESP_COLORS = ["#4338ca", "#0ea5e9", "#f59e0b", "#16a34a", "#db2777", "#7c3aed", "#94a3b8"];
-  const espLabels = JSON.stringify(data.espVolume.days);
-  const espDatasets = JSON.stringify(
-    data.espVolume.espNames.map((name, i) => ({
-      label: name,
-      data: data.espVolume.series[name],
-      backgroundColor: ESP_COLORS[i % ESP_COLORS.length],
-      stack: "volume",
-    })),
+  const blocking = e.blocking.length
+    ? `<div class="list-title">Top failing senders</div><ul class="list">${e.blocking
+        .map(
+          (b) =>
+            `<li><span><span class="esp">${escapeHtml(b.esp)}</span> <code>${escapeHtml(b.ip)}</code></span><span class="badge bad">${fmtNumber(b.failing)} failing</span></li>`,
+        )
+        .join("")}</ul>`
+    : "";
+
+  return panel(
+    "Enforcement readiness",
+    `<div class="verdict ${tone}"><div class="verdict-icon">${icon}</div><div><div class="verdict-title">${title}</div><div class="verdict-body">${body}</div></div></div>${mixHtml}${sim}${blocking}`,
+    { sub: `Last ${e.windowDays} days` },
+  );
+}
+
+export function renderOverviewBody(
+  data: Overview,
+  f: Filters,
+  list: ListState,
+  url: URL,
+  totalDomains: number,
+): { body: string; scripts: string } {
+  const c = data.current;
+  const rate = c.total > 0 ? (c.passed / c.total) * 100 : 0;
+  const prevRate = data.previous && data.previous.total > 0 ? (data.previous.passed / data.previous.total) * 100 : null;
+  const multi = f.domains.length !== 1 && totalDomains > 1;
+  const range = rangeLabel(f.range);
+
+  const welcome =
+    totalDomains === 0
+      ? `<div class="callout"><h3>Welcome, no reports yet</h3><p>Connect the mailbox that receives your DMARC reports on the <a href="/admin">admin page</a>, then run a sync. Reports appear here as soon as the first sync completes.</p></div>`
+      : "";
+
+  const kpis = `<div class="kpis">
+    <div class="kpi"><div class="kpi-label">Messages</div><div class="kpi-value">${fmtNumber(c.total)}</div><div class="kpi-foot">${delta(c.total, data.previous ? data.previous.total : null, "pct")}</div></div>
+    <div class="kpi"><div class="kpi-label">DMARC pass rate</div><div class="kpi-value v-${c.total ? rateTone(rate) : "good"}">${c.total ? fmtPct(rate) : "&ndash;"}</div><div class="kpi-foot">${c.total ? delta(rate, prevRate, "pp") : '<span class="muted">No messages in range</span>'}</div></div>
+    <div class="kpi"><div class="kpi-label">Sending sources</div><div class="kpi-value">${fmtNumber(c.sources)}</div><div class="kpi-foot">${data.failingSources ? `<span class="badge bad">${fmtNumber(data.failingSources)} failing</span>` : '<span class="badge good">all passing</span>'}</div></div>
+    <div class="kpi"><div class="kpi-label">Reports ingested</div><div class="kpi-value">${fmtNumber(data.reports.count)}</div><div class="kpi-foot">${data.reports.latest ? `Latest ${fmtDate(data.reports.latest)}` : '<span class="muted">None in range</span>'}</div></div>
+    ${totalDomains > 1 ? `<div class="kpi"><div class="kpi-label">Domains</div><div class="kpi-value">${fmtNumber(c.domains)}</div><div class="kpi-foot"><span>of ${fmtNumber(totalDomains)} total</span></div></div>` : ""}
+  </div>`;
+
+  const trendPanel = panel(
+    "Authentication trend",
+    c.total > 0 ? `<div class="chart-box"><canvas id="trend" role="img" aria-label="Daily passed and failed messages"></canvas></div>` : emptyState("No messages in this range", "Try a longer time range."),
+    { sub: range },
   );
 
-  const sourcesHtml = data.sources.map(sourceRowHtml).join("");
+  const topSenders = Object.entries(data.esp.totals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+  const sendersTotal = Object.values(data.esp.totals).reduce((a, b) => a + b, 0);
+  const sendersPanel = panel(
+    "Top senders",
+    topSenders.length
+      ? `<ul class="list">${topSenders
+          .map(
+            ([name, n]) =>
+              `<li><span class="esp">${escapeHtml(name)}</span><span><strong>${fmtNumber(n)}</strong> <span class="muted">${share((n / sendersTotal) * 100)}</span></span></li>`,
+          )
+          .join("")}</ul>`
+      : emptyState("No senders yet", "Senders appear once reports are ingested."),
+    { sub: range },
+  );
 
-  const rangeLinks = [
-    ...RANGE_OPTIONS.map((days) => ({ label: days >= 365 ? "1y" : `${days}d`, days })),
-    { label: "All time", days: null },
-  ]
-    .map((opt) => {
-      const params = new URLSearchParams();
-      if (opt.days !== null) params.set("range", String(opt.days));
-      if (selected.length) params.set("domains", selected.join(","));
-      const qs = params.toString();
-      return `<a class="range-pill ${opt.days === data.rangeDays ? "active" : ""}" href="/${qs ? `?${qs}` : ""}">${opt.label}</a>`;
-    })
-    .join("");
+  const volumePanel = panel(
+    "Volume by sender",
+    c.total > 0 ? `<div class="chart-box"><canvas id="volume" role="img" aria-label="Daily message volume by sender"></canvas></div>` : emptyState("No messages in this range", "Try a longer time range."),
+    { sub: range },
+  );
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-${htmlHead(`${BRAND} · ${headerTitle}`)}
-</head>
-<body>
-<header>
-  <div class="eyebrow">${BRAND}</div>
-  <h1>${escapeHtml(headerTitle)}</h1>
-  ${navHtml("overview", navDomain)}
-</header>
-<main>
-  ${
-    data.totals.reports === 0
-      ? `<div class="card" style="border-color:#c7d2fe;background:#f5f6ff">
-           <h2>Welcome - no reports yet</h2>
-           <p class="form-hint" style="margin:0">
-             Connect the mailbox that receives your DMARC reports on the
-             <a href="/admin">admin page</a>, then run a sync. Reports appear here as soon as the
-             first sync completes.
-           </p>
-         </div>`
-      : ""
-  }
-  ${domainMultiSelectHtml(allDomains, selected, "/")}
-  <div class="stat-grid">
-    <div class="stat-card"><div class="label">Reports Ingested</div><div class="value">${fmtNumber(data.totals.reports)}</div></div>
-    <div class="stat-card"><div class="label">Messages Covered</div><div class="value">${fmtNumber(totalMessages)}</div></div>
-    <div class="stat-card"><div class="label">Distinct Sources</div><div class="value">${fmtNumber(data.sources.length)}</div></div>
-    <div class="stat-card"><div class="label">Overall Pass Rate (${escapeHtml(data.rangeLabel)})</div><div class="value" style="color:${overallRate >= 99.9 ? "var(--good)" : overallRate >= 90 ? "var(--warn)" : "var(--bad)"}">${overallRate.toFixed(1)}%</div></div>
-  </div>
+  const sourcesAnchor = "sources";
+  const rows = data.sources.rows.map(sourceRow).join("");
+  const sourcesTable = rows
+    ? `<div class="table-wrap"><table class="data">
+        <thead><tr>
+          ${sortTh("Sender", "sender", list, url, { anchor: sourcesAnchor })}
+          ${sortTh("Source IP", "ip", list, url, { anchor: sourcesAnchor })}
+          ${sortTh("Domains", "domains", list, url, { num: true, anchor: sourcesAnchor })}
+          ${sortTh("Messages", "messages", list, url, { num: true, anchor: sourcesAnchor })}
+          ${sortTh("Pass rate", "rate", list, url, { defaultDir: "asc", anchor: sourcesAnchor })}
+          <th>Issues</th>
+          ${sortTh("Last seen", "seen", list, url, { anchor: sourcesAnchor, defaultDir: "desc" })}
+        </tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+    : emptyState(list.q ? "No matching sources" : "No sending sources", list.q ? "Try a different search." : "Nothing was sent in this range.");
 
-  <div class="card">
-    <div class="trend-header">
-      <h2>Authentication Trend &middot; ${escapeHtml(data.rangeLabel)}</h2>
-      <div class="range-pills">${rangeLinks}</div>
+  const sourcesPanel = `<section class="panel" id="${sourcesAnchor}">
+    <div class="panel-head"><div><h2 class="panel-title">Sending sources</h2><div class="panel-sub">${range} &middot; failing senders first</div></div>
+      ${searchForm({ action: "/", filters: f, list, placeholder: "Search IP, sender or hostname", anchor: sourcesAnchor })}
     </div>
-    <canvas id="trendChart" height="90"></canvas>
-  </div>
+    <div class="panel-body flush">${sourcesTable}</div>
+    ${pagination({ page: list.page, pageSize: SOURCES_PAGE_SIZE, total: data.sources.total, noun: "sources", href: (p) => urlWith(url, { page: String(p) }) + `#${sourcesAnchor}` })}
+  </section>`;
 
-  <div class="card">
-    <h2>Volume by Sender &middot; ${escapeHtml(data.rangeLabel)}</h2>
-    <canvas id="espChart" height="90"></canvas>
-  </div>
+  const body = `${welcome}${kpis}
+  <div class="grid-main">${trendPanel}${enforcementPanel(data, multi)}</div>
+  <div class="grid-main">${volumePanel}${sendersPanel}</div>
+  ${sourcesPanel}`;
 
-  <div class="grid-2">
-    <div class="card">
-      <h2>Sending Sources &middot; ${escapeHtml(data.rangeLabel)}</h2>
-      <table>
-        <thead><tr><th>Sender</th><th>Source IP</th><th style="text-align:right">Messages</th><th>Pass Rate</th><th>Issues</th><th>Last Seen</th></tr></thead>
-        <tbody>${sourcesHtml}</tbody>
-      </table>
-    </div>
+  const chartData = {
+    days: data.trend.days,
+    passed: data.trend.passed,
+    failed: data.trend.failed,
+    espDays: data.esp.days,
+    espNames: data.esp.names,
+    espSeries: data.esp.series,
+  };
 
-    <div class="card">
-      <h2>Enforcement Readiness</h2>
-      ${verdictHtml}
-      ${dispositionHtml}
-      ${blockingListHtml}
-    </div>
-  </div>
+  const scripts = `
+  var D=${safeJson(chartData)};var COLORS=${safeJson(ESP_COLORS)};
+  function axes(){return{x:{stacked:true,grid:{display:false},ticks:{autoSkip:true,maxTicksLimit:10,maxRotation:0}},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}}}
+  var common={responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{position:'bottom'}}};
+  mountCharts(function(){
+    var t=document.getElementById('trend');
+    if(t)new Chart(t,{type:'bar',data:{labels:D.days,datasets:[
+      {label:'Passed',data:D.passed,backgroundColor:'#22c55e',borderRadius:2,borderSkipped:false,stack:'v'},
+      {label:'Failed',data:D.failed,backgroundColor:'#ef4444',borderRadius:2,borderSkipped:false,stack:'v'}]},
+      options:Object.assign({},common,{scales:axes()})});
+    var v=document.getElementById('volume');
+    if(v)new Chart(v,{type:'bar',data:{labels:D.espDays,datasets:D.espNames.map(function(n,i){
+      return{label:n,data:D.espSeries[n],backgroundColor:COLORS[i%COLORS.length],borderRadius:2,borderSkipped:false,stack:'v'}})},
+      options:Object.assign({},common,{scales:axes()})});
+  });`;
 
-  <div class="footer-note">${BRAND} &middot; aggregate reports ingested over IMAP &middot; runs on Cloudflare Workers, D1 and Containers</div>
-</main>
-<script>
-  const ctx = document.getElementById('trendChart');
-  new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: ${trendLabels},
-      datasets: [
-        {
-          label: 'Passed',
-          data: ${trendPassed},
-          backgroundColor: '#22c55e',
-          borderRadius: 3,
-          borderSkipped: false,
-          stack: 'volume',
-        },
-        {
-          label: 'Failed',
-          data: ${trendFailed},
-          backgroundColor: '#ef4444',
-          borderRadius: 3,
-          borderSkipped: false,
-          stack: 'volume',
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { position: 'top', align: 'end' } },
-      scales: {
-        x: { stacked: true, ticks: { autoSkip: true, maxTicksLimit: 20 }, grid: { display: false } },
-        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
-      },
-    },
-  });
-
-  const espCtx = document.getElementById('espChart');
-  new Chart(espCtx, {
-    type: 'bar',
-    data: {
-      labels: ${espLabels},
-      datasets: ${espDatasets}.map((d) => ({ ...d, borderRadius: 3, borderSkipped: false })),
-    },
-    options: {
-      responsive: true,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { position: 'top', align: 'end' } },
-      scales: {
-        x: { stacked: true, ticks: { autoSkip: true, maxTicksLimit: 20 }, grid: { display: false } },
-        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
-      },
-    },
-  });
-</script>
-</body>
-</html>`;
+  return { body, scripts };
 }

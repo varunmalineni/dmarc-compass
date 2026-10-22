@@ -1,9 +1,9 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { syncReports } from "./sync";
-import { loadDashboardData } from "./dashboard-data";
-import { renderDashboard } from "./dashboard-html";
-import { loadReportsList, loadReportDetail } from "./reports-data";
-import { renderReportsList, renderReportDetail } from "./reports-html";
+import { loadOverview, SOURCE_SORT_KEYS } from "./dashboard-data";
+import { renderOverviewBody } from "./dashboard-html";
+import { loadReportsList, loadReportDetail, REPORT_SORT_KEYS, REPORT_FILTERS, type ReportFilter } from "./reports-data";
+import { renderReportsBody, renderReportDetailBody } from "./reports-html";
 import {
   getEffectiveImapConfig,
   getOverriddenKeys,
@@ -12,15 +12,17 @@ import {
   type ConfigKey,
 } from "./settings-data";
 import { renderAdmin } from "./admin-html";
-import { loadDomainsOverview, loadAllDomainNames } from "./domains-data";
-import { renderDomainsOverview } from "./domains-html";
-import { loadTlsData } from "./tls-data";
-import { renderTlsReports } from "./tls-html";
+import { loadDomains, loadChrome, DOMAIN_SORT_KEYS } from "./domains-data";
+import { renderDomainsBody } from "./domains-html";
+import { loadTls } from "./tls-data";
+import { renderTlsBody } from "./tls-html";
 import { loadMapPoints } from "./map-data";
-import { renderMap } from "./map-html";
+import { renderMapBody } from "./map-html";
 import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
 import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync } from "./app-settings";
 import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
+import { parseFilters, parseList, scopeLabel, rangeLabel } from "./filters";
+import { layout } from "./shared-ui";
 
 interface Env extends AdminEnv {
   DMARC_CONTAINER: DurableObjectNamespace<DmarcViewerContainer>;
@@ -166,7 +168,7 @@ function jsonError(message: string, status: number): Response {
   return new Response(message + "\n", { status });
 }
 
-async function handleAdmin(request: Request, env: Env): Promise<Response> {
+async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
   if (!hasValidBasicAuth(request, env)) return challenge(env);
 
   if (request.method === "POST") {
@@ -242,7 +244,7 @@ async function handleAdmin(request: Request, env: Env): Promise<Response> {
         imapConfigured: isImapConfigured(imap),
         lastSync,
       },
-    }),
+    }, url),
     { headers: HTML },
   );
 }
@@ -267,61 +269,53 @@ export default {
 
     await ensureSchema(env.DB);
 
-    if (pathname === "/admin") return handleAdmin(request, env);
+    if (pathname === "/admin") return handleAdmin(request, env, url);
 
     // Everything below is the read-only dashboard, served from D1.
     const blocked = await dashboardGate(request, env);
     if (blocked) return blocked;
 
-    const domainParam = url.searchParams.get("domain") || null;
+    const f = parseFilters(url);
+    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout(opts), { headers: HTML });
+    const scope = `${scopeLabel(f)} &middot; ${rangeLabel(f.range)}`;
 
     if (pathname === "/") {
-      const rangeParam = url.searchParams.get("range");
-      const rangeDays = rangeParam ? parseInt(rangeParam, 10) : null;
-      const domainsParam = url.searchParams.get("domains");
-      const domainsFilter = domainsParam
-        ? domainsParam.split(",").map((d) => d.trim()).filter(Boolean)
-        : domainParam
-          ? [domainParam]
-          : null;
-      const [data, allDomains] = await Promise.all([
-        loadDashboardData(env.DB, Number.isFinite(rangeDays) ? rangeDays : null, domainsFilter),
-        loadAllDomainNames(env.DB),
-      ]);
-      return new Response(renderDashboard(data, allDomains), { headers: HTML });
+      const list = parseList(url, SOURCE_SORT_KEYS, "risk", "desc");
+      const [data, chrome] = await Promise.all([loadOverview(env.DB, f, list), loadChrome(env.DB)]);
+      const { body, scripts } = renderOverviewBody(data, f, list, url, chrome.allDomains.length);
+      return page({ title: "Overview", subtitle: scope, active: "overview", url, filters: f, chrome, body, scripts, charts: true });
     }
 
     if (pathname === "/domains") {
-      return new Response(renderDomainsOverview(await loadDomainsOverview(env.DB)), { headers: HTML });
+      const list = parseList(url, DOMAIN_SORT_KEYS, "risk", "desc");
+      const [data, chrome] = await Promise.all([loadDomains(env.DB, f, list), loadChrome(env.DB)]);
+      return page({ title: "Domains", subtitle: scope, active: "domains", url, filters: f, chrome, body: renderDomainsBody(data, f, list, url) });
     }
 
     if (pathname === "/reports") {
-      const filterParam = url.searchParams.get("filter");
-      const filter = (["dkim", "spf", "dmarc"].includes(filterParam ?? "") ? filterParam : "all") as
-        | "all"
-        | "dkim"
-        | "spf"
-        | "dmarc";
-      const items = await loadReportsList(env.DB, filter, domainParam);
-      const domainLabel = domainParam ?? items[0]?.domain ?? "All Domains";
-      return new Response(renderReportsList(items, filter, domainLabel, domainParam), { headers: HTML });
+      const list = parseList(url, REPORT_SORT_KEYS, "date", "desc");
+      const fp = url.searchParams.get("filter") as ReportFilter;
+      const filter: ReportFilter = REPORT_FILTERS.includes(fp) ? fp : "all";
+      const [data, chrome] = await Promise.all([loadReportsList(env.DB, f, list, filter), loadChrome(env.DB)]);
+      return page({ title: "DMARC reports", subtitle: scope, active: "reports", url, filters: f, chrome, body: renderReportsBody(data, f, list, filter, url) });
     }
 
     const reportDetailMatch = pathname.match(/^\/reports\/([^/]+)$/);
     if (reportDetailMatch) {
-      const detail = await loadReportDetail(env.DB, decodeURIComponent(reportDetailMatch[1]));
+      const [detail, chrome] = await Promise.all([loadReportDetail(env.DB, decodeURIComponent(reportDetailMatch[1])), loadChrome(env.DB)]);
       if (!detail) return new Response("Report not found\n", { status: 404 });
-      return new Response(renderReportDetail(detail, detail.domain), { headers: HTML });
+      return page({ title: `Report from ${detail.org}`, subtitle: `${detail.domain}`, active: "reports", url, chrome, body: renderReportDetailBody(detail, f) });
     }
 
     if (pathname === "/tls-reports") {
-      const [data, allDomains] = await Promise.all([loadTlsData(env.DB, domainParam), loadAllDomainNames(env.DB)]);
-      return new Response(renderTlsReports(data, allDomains, domainParam), { headers: HTML });
+      const [data, chrome] = await Promise.all([loadTls(env.DB, f), loadChrome(env.DB)]);
+      return page({ title: "TLS reports", subtitle: scope, active: "tls", url, filters: f, chrome, body: renderTlsBody(data, f) });
     }
 
     if (pathname === "/map") {
-      const [points, allDomains] = await Promise.all([loadMapPoints(env.DB, domainParam), loadAllDomainNames(env.DB)]);
-      return new Response(renderMap(points, allDomains, domainParam), { headers: HTML });
+      const [data, chrome] = await Promise.all([loadMapPoints(env.DB, f), loadChrome(env.DB)]);
+      const { body, scripts } = renderMapBody(data, f);
+      return page({ title: "Sender map", subtitle: scope, active: "map", url, filters: f, chrome, body, scripts, leaflet: true });
     }
 
     return new Response("Not found\n", { status: 404 });

@@ -1,80 +1,49 @@
 import type { TlsData } from "./tls-data";
-import { escapeHtml, fmtDate, fmtNumber, navHtml, htmlHead, domainSelectorHtml, BRAND } from "./shared-ui";
+import { TLS_LIMIT } from "./tls-data";
+import { rangeLabel, type Filters } from "./filters";
+import { escapeHtml, fmtDate, fmtNumber, fmtPct, emptyState, panel } from "./shared-ui";
 
-export function renderTlsReports(data: TlsData, allDomains: string[], domainFilter: string | null): string {
-  const totalSessions = data.totalSuccess + data.totalFailure;
-  const successRate = totalSessions > 0 ? (data.totalSuccess / totalSessions) * 100 : 100;
+export function renderTlsBody(d: TlsData, f: Filters): string {
+  const sessions = d.success + d.failure;
+  const rate = sessions > 0 ? (d.success / sessions) * 100 : 100;
+  const tone = rate >= 99.9 ? "v-good" : rate >= 95 ? "v-warn" : "v-bad";
 
-  const byDomainHtml = data.byDomain
-    .map(
-      (d) => `
-      <tr>
-        <td><strong>${escapeHtml(d.policyDomain)}</strong></td>
-        <td><code>${escapeHtml(d.policyType)}</code></td>
-        <td class="num">${fmtNumber(d.totalSuccess)}</td>
-        <td class="num" style="color:${d.totalFailure > 0 ? "var(--bad)" : "inherit"}">${fmtNumber(d.totalFailure)}</td>
-      </tr>`,
-    )
-    .join("");
+  const kpis = `<div class="kpis">
+    <div class="kpi"><div class="kpi-label">TLS reports</div><div class="kpi-value">${fmtNumber(d.reports)}</div><div class="kpi-foot">${escapeHtml(rangeLabel(f.range))}</div></div>
+    <div class="kpi"><div class="kpi-label">Successful sessions</div><div class="kpi-value">${fmtNumber(d.success)}</div><div class="kpi-foot">Delivered over TLS</div></div>
+    <div class="kpi"><div class="kpi-label">Failed sessions</div><div class="kpi-value ${d.failure ? "v-bad" : ""}">${fmtNumber(d.failure)}</div><div class="kpi-foot">Could not negotiate TLS</div></div>
+    <div class="kpi"><div class="kpi-label">Success rate</div><div class="kpi-value ${sessions ? tone : ""}">${sessions ? fmtPct(rate) : "&ndash;"}</div><div class="kpi-foot">${sessions ? "of reported sessions" : "No sessions reported"}</div></div>
+  </div>`;
 
-  const failuresHtml = data.recentFailures
-    .map(
-      (f) => `
-      <tr>
-        <td>${fmtDate(f.dateBegin)}</td>
-        <td>${escapeHtml(f.policyDomain)}</td>
-        <td><span class="issue-badge">${escapeHtml(f.resultType)}</span></td>
-        <td>${f.sendingMtaIp ? `<code>${escapeHtml(f.sendingMtaIp)}</code>` : "&mdash;"}</td>
-        <td>${f.receivingMxHostname ? escapeHtml(f.receivingMxHostname) : "&mdash;"}</td>
-        <td class="num">${fmtNumber(f.failedSessionCount)}</td>
-      </tr>`,
-    )
-    .join("");
+  const empty = emptyState(
+    "No SMTP TLS reports yet",
+    "These come from mailbox providers that check TLS when they send <em>to</em> your domains. They start arriving after you publish a <code>_smtp._tls</code> TLS-RPT record (and usually an MTA-STS policy).",
+  );
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-${htmlHead(`TLS Reports · ${BRAND}`)}
-</head>
-<body>
-<header>
-  <div class="eyebrow">${BRAND}</div>
-  <h1>SMTP TLS Reports</h1>
-  ${navHtml("tls", domainFilter)}
-</header>
-<main>
-  ${domainSelectorHtml(allDomains, domainFilter, "/tls-reports")}
-  <div class="stat-grid">
-    <div class="stat-card"><div class="label">TLS Reports</div><div class="value">${fmtNumber(data.totalReports)}</div></div>
-    <div class="stat-card"><div class="label">Successful Sessions</div><div class="value">${fmtNumber(data.totalSuccess)}</div></div>
-    <div class="stat-card"><div class="label">Failed Sessions</div><div class="value" style="color:${data.totalFailure > 0 ? "var(--bad)" : "var(--good)"}">${fmtNumber(data.totalFailure)}</div></div>
-    <div class="stat-card"><div class="label">Success Rate</div><div class="value" style="color:${successRate >= 99.9 ? "var(--good)" : successRate >= 95 ? "var(--warn)" : "var(--bad)"}">${successRate.toFixed(1)}%</div></div>
-  </div>
+  const byDomain = d.byDomain.length
+    ? `<div class="table-wrap"><table class="data"><thead><tr><th>Domain</th><th>Policy</th><th class="num">Successful</th><th class="num">Failed</th></tr></thead><tbody>${d.byDomain
+        .map(
+          (r) =>
+            `<tr><td><strong>${escapeHtml(r.domain)}</strong></td><td><code>${escapeHtml(r.policyType)}</code></td><td class="num">${fmtNumber(r.success)}</td><td class="num">${r.failure ? `<span class="v-bad">${fmtNumber(r.failure)}</span>` : '<span class="muted">0</span>'}</td></tr>`,
+        )
+        .join("")}</tbody></table></div>`
+    : empty;
 
-  <div class="card">
-    <h2>MTA-STS / DANE Policy Results by Domain</h2>
-    ${
-      data.byDomain.length
-        ? `<table>
-      <thead><tr><th>Domain</th><th>Policy Type</th><th style="text-align:right">Successful</th><th style="text-align:right">Failed</th></tr></thead>
-      <tbody>${byDomainHtml}</tbody>
-    </table>`
-        : `<p class="form-hint">No SMTP TLS reports received yet. These come from mailbox providers checking TLS/MTA-STS when sending <em>to</em> you - not every provider sends them, and they typically start arriving once an MTA-STS or TLS-RPT DNS record exists for the domain.</p>`
-    }
-  </div>
+  const failures = d.failures.length
+    ? panel(
+        "Recent TLS failures",
+        `<div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Domain</th><th>Failure</th><th>Sending MTA</th><th>Receiving MX</th><th class="num">Sessions</th></tr></thead><tbody>${d.failures
+          .map(
+            (r) =>
+              `<tr><td class="muted small">${fmtDate(r.at)}</td><td>${escapeHtml(r.domain)}</td><td><span class="badge bad">${escapeHtml(r.resultType)}</span></td><td>${r.ip ? `<code>${escapeHtml(r.ip)}</code>` : "&ndash;"}</td><td>${r.mx ? escapeHtml(r.mx) : "&ndash;"}</td><td class="num">${fmtNumber(r.sessions)}</td></tr>`,
+          )
+          .join("")}</tbody></table></div>`,
+        { flush: true, sub: `Latest ${TLS_LIMIT}` },
+      )
+    : "";
 
-  ${
-    data.recentFailures.length
-      ? `<div class="card">
-    <h2>Recent TLS Failures</h2>
-    <table>
-      <thead><tr><th>Date</th><th>Domain</th><th>Failure Type</th><th>Sending MTA IP</th><th>Receiving MX</th><th style="text-align:right">Sessions</th></tr></thead>
-      <tbody>${failuresHtml}</tbody>
-    </table>
-  </div>`
-      : ""
-  }
-</main>
-</body>
-</html>`;
+  return `${kpis}${panel("Policy results by domain", byDomain, {
+    flush: d.byDomain.length > 0,
+    sub: d.byDomainTotal > TLS_LIMIT ? `Top ${TLS_LIMIT} of ${fmtNumber(d.byDomainTotal)} by failures` : escapeHtml(rangeLabel(f.range)),
+  })}${failures}`;
 }

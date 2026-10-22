@@ -1,7 +1,14 @@
-// Shared formatting/escaping helpers, the top nav and the page styles used
-// by every dashboard page.
+// Shared page shell and UI helpers. Every dashboard page renders through
+// layout(), so navigation, global filters, theming and accessibility behave
+// the same everywhere.
+
+import { STYLES } from "./styles";
+import { RANGE_OPTIONS, DEFAULT_RANGE, withFilters, type Filters, type ListState } from "./filters";
+import type { LastSync } from "./app-settings";
 
 export const BRAND = "dmarc-compass";
+
+// ---------- formatting ----------
 
 export function escapeHtml(s: string): string {
   return s
@@ -17,6 +24,7 @@ export function fmtDate(epochSeconds: number): string {
     year: "numeric",
     month: "short",
     day: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -24,15 +32,34 @@ export function fmtNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export function passRateBadgeClass(rate: number): string {
-  if (rate >= 99.9) return "badge-good";
-  if (rate >= 90) return "badge-warn";
-  return "badge-bad";
+export function fmtPct(n: number, digits = 1): string {
+  return `${n.toFixed(digits)}%`;
 }
 
-/** Mirrors the "Issue" tags from the original dmarc-report-viewer's
- * /sources endpoint: policy-level (aligned) vs. raw auth-level failures,
- * tracked separately since they point to different root causes. */
+export function relTime(epochSeconds: number, now = Math.floor(Date.now() / 1000)): string {
+  const s = Math.max(0, now - epochSeconds);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+/** JSON that is safe to embed inside a <script> element. */
+export function safeJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+}
+
+// ---------- DMARC helpers ----------
+
+export type RateTone = "good" | "warn" | "bad";
+export function rateTone(rate: number): RateTone {
+  if (rate >= 99.9) return "good";
+  if (rate >= 90) return "warn";
+  return "bad";
+}
+
+/** Policy-level (aligned) and auth-level (raw) failures are tracked
+ * separately because they point to different root causes. */
 export function deriveIssues(r: {
   policy_dkim?: string | null;
   policy_spf?: string | null;
@@ -40,445 +67,349 @@ export function deriveIssues(r: {
   auth_spf_result?: string | null;
 }): string[] {
   const issues: string[] = [];
-  if (r.policy_dkim && r.policy_dkim !== "pass") issues.push("DKIM Policy");
-  if (r.policy_spf && r.policy_spf !== "pass") issues.push("SPF Policy");
-  if (r.auth_dkim_result && r.auth_dkim_result !== "pass") issues.push("DKIM Auth");
-  if (r.auth_spf_result && r.auth_spf_result !== "pass") issues.push("SPF Auth");
+  if (r.policy_dkim && r.policy_dkim !== "pass") issues.push("DKIM policy");
+  if (r.policy_spf && r.policy_spf !== "pass") issues.push("SPF policy");
+  if (r.auth_dkim_result && r.auth_dkim_result !== "pass") issues.push("DKIM auth");
+  if (r.auth_spf_result && r.auth_spf_result !== "pass") issues.push("SPF auth");
   return issues;
 }
 
-export function issueBadgesHtml(issues: string[]): string {
-  if (issues.length === 0) return "";
-  return issues.map((i) => `<span class="issue-badge">${escapeHtml(i)}</span>`).join(" ");
+export function issueBadges(issues: string[]): string {
+  return issues.map((i) => `<span class="badge bad">${escapeHtml(i)}</span>`).join(" ");
 }
 
-export function navHtml(
-  active: "overview" | "reports" | "domains" | "tls" | "map" | null,
-  domain: string | null,
-): string {
-  const q = domain ? `?domain=${encodeURIComponent(domain)}` : "";
-  return `
-    <nav class="top-nav">
-      <a href="/${q}" class="${active === "overview" ? "active" : ""}">Overview</a>
-      <a href="/domains" class="${active === "domains" ? "active" : ""}">Domains</a>
-      <a href="/reports${q}" class="${active === "reports" ? "active" : ""}">DMARC Reports</a>
-      <a href="/tls-reports${q}" class="${active === "tls" ? "active" : ""}">TLS Reports</a>
-      <a href="/map${q}" class="${active === "map" ? "active" : ""}">Sender Map</a>
-      <a href="/classic/" class="external">Classic dashboard &#8599;</a>
-    </nav>`;
+export function rateCell(rate: number): string {
+  const tone = rateTone(rate);
+  return `<div class="rate"><div class="rate-track"><div class="rate-fill ${tone}" style="width:${Math.max(0, Math.min(100, rate)).toFixed(1)}%"></div></div><span class="rate-num ${tone}">${fmtPct(rate)}</span></div>`;
 }
 
-export function domainSelectorHtml(domains: string[], current: string | null, basePath: string): string {
-  if (domains.length <= 1) return "";
-  const options = [
-    `<option value="" ${!current ? "selected" : ""}>All Domains (${domains.length})</option>`,
-    ...domains.map((d) => `<option value="${escapeHtml(d)}" ${d === current ? "selected" : ""}>${escapeHtml(d)}</option>`),
-  ].join("");
-  return `
-    <div class="domain-selector">
-      <label for="domain-select">Domain:</label>
-      <select id="domain-select" onchange="
-        const v = this.value;
-        location.href = '${basePath}' + (v ? '?domain=' + encodeURIComponent(v) : '');
-      ">${options}</select>
-    </div>`;
+export function emptyState(title: string, body: string): string {
+  return `<div class="empty"><h3>${escapeHtml(title)}</h3><p>${body}</p></div>`;
 }
 
-/** Multi-select domain filter: all / one / a handful. Includes a search
- * box since production will have 1,500+ domains - a plain dropdown or
- * checkbox wall doesn't scale, but filtering a list of plain strings
- * client-side at that count is still instant. */
-export function domainMultiSelectHtml(domains: string[], selected: string[], basePath: string): string {
-  const summary =
-    selected.length === 0
-      ? `All Domains (${domains.length})`
-      : selected.length === 1
-        ? selected[0]
-        : `${selected.length} Domains Selected`;
+// ---------- URL helpers ----------
 
-  const items = domains
-    .map(
-      (d) =>
-        `<label class="dms-item"><input type="checkbox" value="${escapeHtml(d)}" ${selected.includes(d) ? "checked" : ""}/> <span>${escapeHtml(d)}</span></label>`,
-    )
+/** The current URL with some query params set/removed. `page` is dropped by
+ * default because changing any filter should return to the first page. */
+export function urlWith(url: URL, set: Record<string, string | undefined>, drop: string[] = ["page"]): string {
+  const p = new URLSearchParams(url.searchParams);
+  p.delete("domain"); // legacy single-domain alias, normalised to `domains`
+  for (const k of drop) p.delete(k);
+  for (const [k, v] of Object.entries(set)) {
+    if (v === undefined || v === "") p.delete(k);
+    else p.set(k, v);
+  }
+  const qs = p.toString();
+  return qs ? `${url.pathname}?${qs}` : url.pathname;
+}
+
+/** Hidden form inputs that carry the global filters through a GET form. */
+export function hiddenFilterInputs(f: Filters, extra: Record<string, string | undefined> = {}): string {
+  const fields: Record<string, string | undefined> = { ...extra };
+  if (f.domains.length) fields.domains = f.domains.join(",");
+  if (f.range === null) fields.range = "all";
+  else if (f.range !== DEFAULT_RANGE) fields.range = String(f.range);
+  return Object.entries(fields)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v as string)}">`)
     .join("");
-
-  return `
-    <div class="domain-multiselect">
-      <button type="button" class="dms-trigger" id="dms-trigger">${escapeHtml(summary)} <span class="dms-caret">&#9662;</span></button>
-      <div class="dms-panel" id="dms-panel" hidden>
-        <input type="text" class="dms-search" id="dms-search" placeholder="Search ${domains.length} domains..." />
-        <div class="dms-actions">
-          <button type="button" id="dms-select-all">Select all visible</button>
-          <button type="button" id="dms-clear">Clear</button>
-        </div>
-        <div class="dms-list" id="dms-list">${items}</div>
-        <button type="button" class="dms-apply" id="dms-apply">Apply</button>
-      </div>
-    </div>
-    <script>
-      (function () {
-        const trigger = document.getElementById('dms-trigger');
-        const panel = document.getElementById('dms-panel');
-        const search = document.getElementById('dms-search');
-        const list = document.getElementById('dms-list');
-        trigger.addEventListener('click', (e) => {
-          e.stopPropagation();
-          panel.hidden = !panel.hidden;
-          if (!panel.hidden) search.focus();
-        });
-        panel.addEventListener('click', (e) => e.stopPropagation());
-        document.addEventListener('click', () => { panel.hidden = true; });
-        search.addEventListener('input', () => {
-          const q = search.value.toLowerCase();
-          list.querySelectorAll('.dms-item').forEach((item) => {
-            item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
-          });
-        });
-        document.getElementById('dms-select-all').addEventListener('click', () => {
-          list.querySelectorAll('.dms-item').forEach((item) => {
-            if (item.style.display !== 'none') item.querySelector('input').checked = true;
-          });
-        });
-        document.getElementById('dms-clear').addEventListener('click', () => {
-          list.querySelectorAll('input').forEach((cb) => { cb.checked = false; });
-        });
-        document.getElementById('dms-apply').addEventListener('click', () => {
-          const checked = [...list.querySelectorAll('input:checked')].map((cb) => cb.value);
-          const url = new URL(window.location.href);
-          url.searchParams.delete('domain');
-          if (checked.length === 0) {
-            url.searchParams.delete('domains');
-          } else {
-            url.searchParams.set('domains', checked.join(','));
-          }
-          window.location.href = '${basePath}' + (url.search || '');
-        });
-      })();
-    </script>`;
 }
 
-export const SHARED_STYLES = `
-  :root {
-    --bg: #f5f6fb;
-    --card: #ffffff;
-    --border: #e7e8f1;
-    --text: #0f1222;
-    --muted: #6b7280;
-    --accent: #4338ca;
-    --accent-2: #6d28d9;
-    --accent-light: #eef0ff;
-    --good: #15803d;
-    --good-bg: #ecfdf3;
-    --warn: #b45309;
-    --warn-bg: #fffaeb;
-    --bad: #b91c1c;
-    --bad-bg: #fef2f2;
-    --shadow-sm: 0 1px 2px rgba(15, 18, 34, 0.04), 0 1px 3px rgba(15, 18, 34, 0.05);
-    --shadow-md: 0 8px 24px rgba(15, 18, 34, 0.08);
+// ---------- table helpers ----------
+
+export function sortTh(
+  label: string,
+  key: string,
+  list: ListState,
+  url: URL,
+  opts: { num?: boolean; defaultDir?: "asc" | "desc"; anchor?: string } = {},
+): string {
+  const active = list.sort === key;
+  const next = active ? (list.dir === "asc" ? "desc" : "asc") : (opts.defaultDir ?? (opts.num ? "desc" : "asc"));
+  const href = urlWith(url, { sort: key, dir: next }) + (opts.anchor ? `#${opts.anchor}` : "");
+  const aria = active ? (list.dir === "asc" ? "ascending" : "descending") : "none";
+  return `<th class="${opts.num ? "num" : ""}" aria-sort="${aria}"><a href="${href}">${escapeHtml(label)}</a></th>`;
+}
+
+export function pagination(o: {
+  page: number;
+  pageSize: number;
+  total: number;
+  href: (page: number) => string;
+  noun: string;
+}): string {
+  const pages = Math.max(1, Math.ceil(o.total / o.pageSize));
+  const page = Math.min(o.page, pages);
+  const from = o.total === 0 ? 0 : (page - 1) * o.pageSize + 1;
+  const to = Math.min(o.total, page * o.pageSize);
+  const summary = `Showing ${fmtNumber(from)}&ndash;${fmtNumber(to)} of ${fmtNumber(o.total)} ${o.noun}`;
+  if (pages <= 1) return `<div class="pager"><span>${summary}</span></div>`;
+
+  const nums = new Set([1, pages, page - 1, page, page + 1]);
+  const list = [...nums].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+  const items: string[] = [];
+  let prev = 0;
+  for (const n of list) {
+    if (n - prev > 1) items.push('<span class="gap">&hellip;</span>');
+    items.push(n === page ? `<span class="cur" aria-current="page">${n}</span>` : `<a href="${o.href(n)}">${n}</a>`);
+    prev = n;
   }
-  * { box-sizing: border-box; }
-  html { scrollbar-gutter: stable; }
-  body {
-    margin: 0;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    -webkit-font-smoothing: antialiased;
-  }
-  header {
-    background:
-      radial-gradient(1200px 320px at 15% -20%, rgba(255,255,255,0.14), transparent 60%),
-      linear-gradient(120deg, #2b2470, #4338ca 55%, #5b21b6);
-    color: white;
-    padding: 30px 40px 0;
-    box-shadow: 0 1px 0 rgba(0,0,0,0.06);
-  }
-  header .eyebrow {
-    font-size: 11.5px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    opacity: 0.7;
-  }
-  header h1 {
-    margin: 5px 0 0;
-    font-size: 27px;
-    font-weight: 800;
-    letter-spacing: -0.01em;
-  }
-  .top-nav {
-    display: flex;
-    gap: 24px;
-    margin-top: 24px;
-    padding-top: 2px;
-    border-top: 1px solid rgba(255,255,255,0.14);
-    flex-wrap: wrap;
-  }
-  .top-nav a {
-    color: rgba(255,255,255,0.62);
-    text-decoration: none;
-    font-size: 13.5px;
-    font-weight: 600;
-    padding: 13px 1px;
-    border-bottom: 2px solid transparent;
-    transition: color 0.15s ease, border-color 0.15s ease;
-  }
-  .top-nav a.active { color: white; border-bottom-color: #a5b4fc; }
-  .top-nav a.external { margin-left: auto; color: rgba(255,255,255,0.48); }
-  .top-nav a:hover { color: white; }
-  main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 32px 40px 60px;
-  }
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
-    margin-bottom: 28px;
-  }
-  .stat-card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 18px 20px;
-    box-shadow: var(--shadow-sm);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-  }
-  .stat-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-  .stat-card .label {
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .stat-card .value {
-    font-size: 29px;
-    font-weight: 800;
-    margin-top: 7px;
-    letter-spacing: -0.01em;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 24px;
-    margin-bottom: 24px;
-    box-shadow: var(--shadow-sm);
-  }
-  .card h2 {
-    margin: 0 0 16px;
-    font-size: 15.5px;
-    font-weight: 700;
-    letter-spacing: -0.005em;
-  }
-  .trend-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-bottom: 18px;
-  }
-  .trend-header h2 { margin: 0; }
-  .range-pills, .filter-pills { display: flex; gap: 6px; flex-wrap: wrap; }
-  .range-pill, .filter-pill {
-    font-size: 12.5px;
-    font-weight: 600;
-    padding: 6px 13px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    text-decoration: none;
-    background: white;
-    transition: all 0.12s ease;
-  }
-  .range-pill:hover, .filter-pill:hover { border-color: var(--accent); color: var(--accent); }
-  .range-pill.active, .filter-pill.active {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: white; border-color: transparent;
-    box-shadow: 0 2px 8px rgba(67, 56, 202, 0.35);
-  }
-  .domain-selector {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 20px;
-    font-size: 13.5px;
-  }
-  .domain-selector label { font-weight: 600; color: var(--muted); }
-  .domain-selector select {
-    padding: 7px 11px; border: 1px solid var(--border); border-radius: 9px;
-    font-size: 13.5px; font-family: inherit; background: white; box-shadow: var(--shadow-sm);
-  }
-  .domain-multiselect { position: relative; display: inline-block; margin-bottom: 20px; }
-  .dms-trigger {
-    font-size: 13.5px; font-weight: 600; padding: 9px 15px; border: 1px solid var(--border);
-    border-radius: 10px; background: white; cursor: pointer; color: var(--text);
-    min-width: 200px; text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 10px;
-    box-shadow: var(--shadow-sm); transition: border-color 0.12s ease;
-  }
-  .dms-trigger:hover { border-color: var(--accent); }
-  .dms-caret { color: var(--muted); }
-  .dms-panel {
-    position: absolute; top: calc(100% + 8px); left: 0; z-index: 20;
-    background: white; border: 1px solid var(--border); border-radius: 12px;
-    box-shadow: var(--shadow-md); width: 320px; padding: 12px;
-  }
-  .dms-search {
-    width: 100%; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 13px; font-family: inherit; margin-bottom: 8px;
-  }
-  .dms-search:focus { outline: 2px solid var(--accent-light); border-color: var(--accent); }
-  .dms-actions { display: flex; justify-content: space-between; margin-bottom: 8px; }
-  .dms-actions button {
-    background: none; border: none; color: var(--accent); font-size: 12px; font-weight: 600;
-    cursor: pointer; padding: 2px 4px;
-  }
-  .dms-list { max-height: 260px; overflow-y: auto; border-top: 1px solid #f1f2f6; border-bottom: 1px solid #f1f2f6; padding: 4px 0; }
-  .dms-item { display: flex; align-items: center; gap: 8px; padding: 7px 6px; font-size: 13.5px; cursor: pointer; border-radius: 7px; }
-  .dms-item:hover { background: var(--bg); }
-  .dms-item input { margin: 0; accent-color: var(--accent); }
-  .dms-apply {
-    width: 100%; margin-top: 10px; background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: white; border: none;
-    padding: 10px; border-radius: 9px; font-size: 13.5px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 4px 12px rgba(67, 56, 202, 0.3);
-  }
-  .grid-2 {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 24px;
-    align-items: start;
-  }
-  @media (max-width: 900px) {
-    .grid-2 { grid-template-columns: 1fr; }
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13.5px;
-  }
-  th {
-    text-align: left;
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 10px 10px;
-    border-bottom: 1px solid var(--border);
-  }
-  td {
-    padding: 11px 10px;
-    border-bottom: 1px solid #f1f2f6;
-    vertical-align: middle;
-  }
-  td.num { text-align: right; font-weight: 600; }
-  td.muted { color: var(--muted); font-size: 13px; }
-  tbody tr { transition: background 0.1s ease; }
-  tbody tr:hover { background: #fafafe; }
-  tr.clickable { cursor: pointer; }
-  tr.clickable:hover { background: var(--accent-light); }
-  a.row-link { color: inherit; text-decoration: none; display: block; }
-  code {
-    background: #f1f2f8;
-    padding: 2px 7px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-family: 'SF Mono', Menlo, Consolas, monospace;
-  }
-  .esp-name { font-weight: 600; }
-  .ptr { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .rate-cell { display: flex; align-items: center; gap: 10px; min-width: 160px; }
-  .rate-bar { flex: 1; height: 6px; background: #eef0f5; border-radius: 4px; overflow: hidden; }
-  .rate-bar-fill { height: 100%; border-radius: 4px; }
-  .badge-good, .rate-bar-fill.badge-good { color: var(--good); }
-  .rate-bar-fill.badge-good { background: #22c55e; }
-  .badge-warn, .rate-bar-fill.badge-warn { color: var(--warn); }
-  .rate-bar-fill.badge-warn { background: #f59e0b; }
-  .badge-bad, .rate-bar-fill.badge-bad { color: var(--bad); }
-  .rate-bar-fill.badge-bad { background: #ef4444; }
-  .rate-label { font-weight: 700; font-size: 12.5px; width: 52px; }
-  .issue-badge {
-    display: inline-block;
-    font-size: 10.5px;
-    font-weight: 700;
-    color: var(--bad);
-    background: var(--bad-bg);
-    padding: 3px 9px;
-    border-radius: 999px;
-    margin: 1px 2px;
-    letter-spacing: 0.01em;
-  }
-  .verdict {
-    display: flex;
-    gap: 14px;
-    padding: 16px;
-    border-radius: 12px;
-    margin-bottom: 14px;
-  }
-  .verdict-good { background: var(--good-bg); }
-  .verdict-bad { background: var(--bad-bg); }
-  .verdict-icon {
-    width: 28px; height: 28px; flex: none;
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; font-size: 15px;
-    color: white;
-  }
-  .verdict-good .verdict-icon { background: var(--good); }
-  .verdict-bad .verdict-icon { background: var(--bad); }
-  .verdict-title { font-weight: 700; margin-bottom: 4px; }
-  .verdict-body { font-size: 13.5px; color: #374151; line-height: 1.55; }
-  .blocking-list { list-style: none; padding: 0; margin: 0; font-size: 13.5px; }
-  .blocking-list li { padding: 9px 0; border-bottom: 1px solid #f1f2f6; }
-  .blocking-list li:last-child { border-bottom: none; }
-  .disposition-note {
-    font-size: 13px;
-    color: #374151;
-    background: #f8f8fc;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    line-height: 1.55;
-    margin-bottom: 14px;
-  }
-  .footer-note { color: var(--muted); font-size: 12px; text-align: center; margin-top: 24px; }
-  .kv-table td:first-child { color: var(--muted); font-weight: 600; width: 180px; }
-  .back-link { color: var(--accent); text-decoration: none; font-size: 13.5px; font-weight: 600; }
-  .raw-links a {
-    font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none;
-    margin-right: 16px;
-  }
-  .form-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
-  .muted { color: var(--muted); }
-`;
+  const prevLink = `<a class="${page <= 1 ? "off" : ""}" href="${o.href(Math.max(1, page - 1))}" aria-label="Previous page">&lsaquo;</a>`;
+  const nextLink = `<a class="${page >= pages ? "off" : ""}" href="${o.href(Math.min(pages, page + 1))}" aria-label="Next page">&rsaquo;</a>`;
+  return `<nav class="pager" aria-label="Pagination"><span>${summary}</span><div class="pages">${prevLink}${items.join("")}${nextLink}</div></nav>`;
+}
+
+export function searchForm(o: {
+  action: string;
+  filters: Filters;
+  list: ListState;
+  placeholder: string;
+  extra?: Record<string, string | undefined>;
+  anchor?: string;
+}): string {
+  const keep: Record<string, string | undefined> = { ...o.extra };
+  if (o.list.sort) keep.sort = o.list.sort;
+  keep.dir = o.list.dir;
+  return `<form class="search" method="get" action="${o.action}${o.anchor ? "#" + o.anchor : ""}" role="search">
+    ${hiddenFilterInputs(o.filters, keep)}
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    <input class="input" type="search" name="q" value="${escapeHtml(o.list.q)}" placeholder="${escapeHtml(o.placeholder)}" aria-label="${escapeHtml(o.placeholder)}">
+  </form>`;
+}
+
+// ---------- shell ----------
+
+export interface Chrome {
+  allDomains: string[];
+  lastSync: LastSync | null;
+}
+
+export type NavKey = "overview" | "domains" | "reports" | "tls" | "map";
+
+export interface PageOpts {
+  title: string;
+  subtitle?: string;
+  active: NavKey | null;
+  url: URL;
+  /** When present, the domain and time-range controls are shown. */
+  filters?: Filters;
+  chrome?: Chrome;
+  body: string;
+  charts?: boolean;
+  leaflet?: boolean;
+  scripts?: string;
+  /** Page-specific CSS appended after the shared styles. */
+  css?: string;
+}
+
+const ICON = {
+  overview: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+  domains: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+  reports: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+  tls: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+  map: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11a7 7 0 0 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+  external: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  sun: '<svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  moon: '<svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+};
+
+const LOGO =
+  '<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><path d="M50 4 L90 20 V48 C90 74 72 90 50 97 C28 90 10 74 10 48 V20 Z" fill="url(#lg)"/><path d="M32 50 L45 63 L70 36" stroke="#fff" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const FAVICON =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234338ca'/%3E%3Cstop offset='1' stop-color='%236d28d9'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 4 L90 20 V48 C90 74 72 90 50 97 C28 90 10 74 10 48 V20 Z' fill='url(%23g)'/%3E%3Cpath d='M32 50 L45 63 L70 36' stroke='white' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%23a855f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 4 L90 20 V48 C90 74 72 90 50 97 C28 90 10 74 10 48 V20 Z' fill='url(%23g)'/%3E%3Cpath d='M32 50 L45 63 L70 36' stroke='white' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E";
 
-export function htmlHead(title: string): string {
-  return `<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>${escapeHtml(title)}</title>
-<link rel="icon" href="${FAVICON}" />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script>
-  if (window.Chart) {
-    Chart.defaults.font.family = "'Inter', -apple-system, 'Segoe UI', sans-serif";
-    Chart.defaults.font.size = 12.5;
-    Chart.defaults.color = '#6b7280';
-    Chart.defaults.plugins.tooltip.padding = 10;
-    Chart.defaults.plugins.tooltip.cornerRadius = 8;
-    Chart.defaults.plugins.tooltip.titleFont = { weight: '700' };
-    Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(17, 18, 34, 0.92)';
-    Chart.defaults.plugins.legend.labels.boxWidth = 12;
-    Chart.defaults.plugins.legend.labels.boxHeight = 12;
-    Chart.defaults.plugins.legend.labels.usePointStyle = true;
-    Chart.defaults.scale.grid.color = '#eef0f5';
+const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
+  { key: "overview", href: "/", label: "Overview", icon: ICON.overview },
+  { key: "domains", href: "/domains", label: "Domains", icon: ICON.domains },
+  { key: "reports", href: "/reports", label: "DMARC reports", icon: ICON.reports },
+  { key: "tls", href: "/tls-reports", label: "TLS reports", icon: ICON.tls },
+  { key: "map", href: "/map", label: "Sender map", icon: ICON.map },
+];
+
+// Runs before first paint so the page never flashes the wrong theme.
+const THEME_INIT = `try{var t=localStorage.getItem('theme');if(!t&&matchMedia('(prefers-color-scheme: dark)').matches)t='dark';if(t)document.documentElement.dataset.theme=t}catch(e){}`;
+
+const CHART_SETUP = `
+function themeCharts(){
+  var s=getComputedStyle(document.documentElement),c=function(n){return s.getPropertyValue(n).trim()};
+  Chart.defaults.font.family="'Inter',-apple-system,'Segoe UI',sans-serif";
+  Chart.defaults.font.size=12;
+  Chart.defaults.color=c('--muted');
+  Chart.defaults.borderColor=c('--border');
+  Chart.defaults.plugins.tooltip.backgroundColor='rgba(12,14,30,0.95)';
+  Chart.defaults.plugins.tooltip.padding=10;
+  Chart.defaults.plugins.tooltip.cornerRadius=8;
+  Chart.defaults.plugins.legend.labels.usePointStyle=true;
+  Chart.defaults.plugins.legend.labels.boxWidth=8;
+}
+function mountCharts(fn){window.__mount=fn;themeCharts();fn()}`;
+
+const SHELL_JS = `
+(function(){
+  var btn=document.getElementById('theme-btn');
+  if(btn)btn.addEventListener('click',function(){
+    var d=document.documentElement,next=d.dataset.theme==='dark'?'light':'dark';
+    d.dataset.theme=next;try{localStorage.setItem('theme',next)}catch(e){}
+    if(window.Chart&&window.__mount){Object.values(Chart.instances).forEach(function(c){c.destroy()});themeCharts();window.__mount()}
+  });
+})();`;
+
+const DOMAIN_FILTER_JS = `
+(function(){
+  var data=JSON.parse(document.getElementById('dms-data').textContent);
+  var all=data.all,sel=new Set(data.selected),LIMIT=100,MAXSEL=200;
+  var trigger=document.getElementById('dms-trigger'),panel=document.getElementById('dms-panel'),
+      search=document.getElementById('dms-search'),list=document.getElementById('dms-list'),
+      chips=document.getElementById('dms-chips'),hint=document.getElementById('dms-hint');
+  function close(){panel.hidden=true;trigger.setAttribute('aria-expanded','false')}
+  function open(){panel.hidden=false;trigger.setAttribute('aria-expanded','true');search.focus()}
+  function render(){
+    var q=search.value.trim().toLowerCase();
+    var m=q?all.filter(function(d){return d.toLowerCase().indexOf(q)>-1}):all;
+    var shown=m.slice(0,LIMIT);
+    list.textContent='';
+    shown.forEach(function(d){
+      var l=document.createElement('label');l.className='dms-item';
+      var c=document.createElement('input');c.type='checkbox';c.checked=sel.has(d);
+      c.addEventListener('change',function(){
+        if(c.checked){if(sel.size>=MAXSEL){c.checked=false;hint.textContent='You can select up to '+MAXSEL+' domains.';return}sel.add(d)}else sel.delete(d);
+        renderChips();
+      });
+      var s=document.createElement('span');s.textContent=d;l.appendChild(c);l.appendChild(s);list.appendChild(l);
+    });
+    if(!shown.length){var e=document.createElement('div');e.className='dms-empty';e.textContent='No matching domains';list.appendChild(e)}
+    hint.textContent=m.length>LIMIT?'Showing the first '+LIMIT+' of '+m.length+' matches. Keep typing to narrow.':all.length+' domains';
+    renderChips();
   }
-</script>
-<style>${SHARED_STYLES}</style>`;
+  function renderChips(){
+    chips.textContent='';
+    var arr=Array.from(sel);
+    arr.slice(0,12).forEach(function(d){
+      var b=document.createElement('button');b.type='button';b.className='dms-chip';b.textContent=d+' \\u00d7';
+      b.setAttribute('aria-label','Remove '+d);
+      b.addEventListener('click',function(){sel.delete(d);render()});chips.appendChild(b);
+    });
+    if(arr.length>12){var s=document.createElement('span');s.className='dms-hint';s.textContent='+'+(arr.length-12)+' more';chips.appendChild(s)}
+  }
+  trigger.addEventListener('click',function(e){e.stopPropagation();panel.hidden?open():close()});
+  panel.addEventListener('click',function(e){e.stopPropagation()});
+  document.addEventListener('click',close);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){close();trigger.focus()}});
+  search.addEventListener('input',render);
+  document.getElementById('dms-clear').addEventListener('click',function(){sel.clear();render()});
+  document.getElementById('dms-apply').addEventListener('click',function(){
+    var u=new URL(location.href);u.searchParams.delete('domain');u.searchParams.delete('page');
+    if(sel.size)u.searchParams.set('domains',Array.from(sel).join(','));else u.searchParams.delete('domains');
+    location.href=u.pathname+u.search;
+  });
+  render();
+})();`;
+
+function domainFilterHtml(allDomains: string[], selected: string[]): string {
+  const label =
+    selected.length === 0
+      ? `All domains <span class="muted">(${fmtNumber(allDomains.length)})</span>`
+      : selected.length === 1
+        ? escapeHtml(selected[0])
+        : `${selected.length} domains`;
+  return `<div class="dms">
+    <button type="button" class="dms-trigger" id="dms-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="dms-panel">
+      ${ICON.globe}<span class="label">${label}</span>${ICON.chevron}
+    </button>
+    <div class="dms-panel" id="dms-panel" hidden>
+      <div class="dms-chips" id="dms-chips"></div>
+      <input class="input" id="dms-search" type="search" placeholder="Search ${fmtNumber(allDomains.length)} domains" aria-label="Search domains" autocomplete="off">
+      <div class="dms-list" id="dms-list"></div>
+      <div class="dms-hint" id="dms-hint" aria-live="polite"></div>
+      <div class="dms-foot"><button type="button" class="link-btn" id="dms-clear">Clear selection</button><button type="button" class="btn" id="dms-apply">Apply</button></div>
+    </div>
+    <script type="application/json" id="dms-data">${safeJson({ all: allDomains, selected })}</script>
+  </div>`;
+}
+
+function freshness(lastSync: LastSync | null): string {
+  if (!lastSync) return `<span class="fresh" title="No sync has run yet"><i class="dot none"></i>Not synced yet</span>`;
+  const age = Math.floor(Date.now() / 1000) - lastSync.at;
+  const stale = !lastSync.ok || age > 3600;
+  const label = lastSync.ok ? `Synced ${relTime(lastSync.at)}` : `Last sync failed ${relTime(lastSync.at)}`;
+  return `<span class="fresh" title="${escapeHtml(lastSync.summary)}"><i class="dot ${stale ? "stale" : ""}"></i>${label}</span>`;
+}
+
+export function layout(o: PageOpts): string {
+  const f = o.filters ?? null;
+  const link = (path: string) => (f ? withFilters(path, f) : path);
+
+  const nav = NAV.map(
+    (n) =>
+      `<a href="${link(n.href)}"${n.key === o.active ? ' aria-current="page"' : ""}>${n.icon}<span>${n.label}</span></a>`,
+  ).join("");
+
+  const ranges = f
+    ? `<div class="seg" role="group" aria-label="Time range">${[...RANGE_OPTIONS, "all" as const]
+        .map((r) => {
+          const val = r === "all" ? null : r;
+          const current = f.range === val;
+          const set = r === "all" ? "all" : r === DEFAULT_RANGE ? undefined : String(r);
+          const label = r === "all" ? "All" : r === 365 ? "1y" : `${r}d`;
+          return `<a href="${urlWith(o.url, { range: set })}" aria-current="${current}">${label}</a>`;
+        })
+        .join("")}</div>`
+    : "";
+
+  const domainCtl = f && o.chrome ? domainFilterHtml(o.chrome.allDomains, f.domains) : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(o.title)} · ${BRAND}</title>
+<link rel="icon" href="${FAVICON}">
+<script>${THEME_INIT}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+${o.charts ? `<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>\n<script>${CHART_SETUP}</script>` : ""}
+${o.leaflet ? `<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">\n<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>` : ""}
+<style>${STYLES}${o.css ?? ""}</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="${link("/")}">${LOGO}<span>${BRAND}</span></a>
+    <nav class="nav" aria-label="Primary">${nav}</nav>
+    <div class="side-foot">
+      <a class="side-link" href="/classic/">${ICON.external}<span>Classic dashboard</span></a>
+      <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle dark mode">${ICON.sun}${ICON.moon}<span>Theme</span></button>
+    </div>
+  </aside>
+  <div class="main-col">
+    <header class="topbar">
+      <div class="titles">
+        <h1>${escapeHtml(o.title)}</h1>
+        ${o.subtitle ? `<div class="sub">${o.subtitle}</div>` : ""}
+      </div>
+      <div class="filters">${o.chrome ? freshness(o.chrome.lastSync) : ""}${domainCtl}${ranges}</div>
+    </header>
+    <main id="main" tabindex="-1">
+${o.body}
+    </main>
+  </div>
+</div>
+<script>${SHELL_JS}</script>
+${f && o.chrome ? `<script>${DOMAIN_FILTER_JS}</script>` : ""}
+${o.scripts ? `<script>${o.scripts}</script>` : ""}
+</body>
+</html>`;
+}
+
+export function panel(title: string, body: string, opts: { sub?: string; actions?: string; flush?: boolean; id?: string } = {}): string {
+  return `<section class="panel"${opts.id ? ` id="${opts.id}"` : ""}>
+  <div class="panel-head"><div><h2 class="panel-title">${escapeHtml(title)}</h2>${opts.sub ? `<div class="panel-sub">${opts.sub}</div>` : ""}</div>${opts.actions ?? ""}</div>
+  <div class="panel-body${opts.flush ? " flush" : ""}">${body}</div>
+</section>`;
 }

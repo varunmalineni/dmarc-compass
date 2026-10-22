@@ -88,10 +88,12 @@ Folder names are case-sensitive. Reports are often filtered into a subfolder; en
 
 ## Using it
 
+A sidebar holds the navigation, with a light/dark theme toggle. The top bar carries two **global filters** that apply to every page and live in the URL, so any view can be bookmarked or shared: a searchable **domain multi-select** and a **time range** (7d, 30d, 90d, 1y, All). The default range is **90 days**; choose *All* for the full history. Large tables are searchable, sortable and paginated.
+
 | Page | What it's for |
 |---|---|
-| **Overview** | Totals, pass/fail trend, volume by sender, sending sources, enforcement readiness. Filter by one, several or all domains. |
-| **Domains** | One row per domain: policy, volume, pass rate, last report. |
+| **Overview** | Totals, pass/fail trend, volume by sender, sending sources, enforcement readiness. Compares against the previous period when a fixed range is selected. |
+| **Domains** | One row per domain, riskiest first: policy, status (enforced, ready to tighten, needs attention), volume, pass rate, last report. Click a row to drill in. |
 | **DMARC reports** | Every report, filterable by DKIM/SPF problems, with per-record detail. |
 | **TLS reports** | SMTP TLS (MTA-STS / DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
@@ -133,9 +135,13 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.
 - **No alerting or scheduled reports yet** (the daily cron trigger is reserved for it).
 
+## Duplicate reports
+
+A report is identified by reporter + report ID + domain, enforced by a unique index. The container's own per-report hash changes whenever its mailbox settings change, so it is deliberately not used to decide whether a report has been seen. Upgrading from an earlier version removes any duplicate rows automatically (the earliest copy is kept).
+
 ## Roadmap
 
-Alerting (new sender, pass-rate drop) to Slack/email/webhook · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export · multi-select domain filter on every page.
+Alerting (new sender, pass-rate drop) to Slack/email/webhook · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API and CSV export.
 
 ## Contributing
 

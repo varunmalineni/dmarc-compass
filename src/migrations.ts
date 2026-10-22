@@ -116,6 +116,31 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    id: 3,
+    name: "deduplicate reports and enforce report identity",
+    // The container's per-report hash changes across its restarts, so keying
+    // on it let the same report be ingested again. A report's real identity is
+    // reporter + report ID (+ domain). Keep the earliest copy of each.
+    statements: [
+      `DELETE FROM dmarc_records WHERE report_hash IN (
+         SELECT hash FROM dmarc_reports
+          WHERE rowid NOT IN (SELECT MIN(rowid) FROM dmarc_reports GROUP BY org_name, report_id, domain))`,
+      `DELETE FROM dmarc_reports
+        WHERE rowid NOT IN (SELECT MIN(rowid) FROM dmarc_reports GROUP BY org_name, report_id, domain)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS ux_dmarc_reports_identity ON dmarc_reports(org_name, report_id, domain)`,
+      `DELETE FROM tls_failure_details WHERE policy_result_id IN (
+         SELECT id FROM tls_policy_results WHERE report_hash IN (
+           SELECT hash FROM tls_reports
+            WHERE rowid NOT IN (SELECT MIN(rowid) FROM tls_reports GROUP BY org_name, report_id)))`,
+      `DELETE FROM tls_policy_results WHERE report_hash IN (
+         SELECT hash FROM tls_reports
+          WHERE rowid NOT IN (SELECT MIN(rowid) FROM tls_reports GROUP BY org_name, report_id))`,
+      `DELETE FROM tls_reports
+        WHERE rowid NOT IN (SELECT MIN(rowid) FROM tls_reports GROUP BY org_name, report_id)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS ux_tls_reports_identity ON tls_reports(org_name, report_id)`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;

@@ -1,53 +1,58 @@
+import { domainFilter, sinceEpoch, type Filters } from "./filters";
+
+const MAX_POINTS = 1500;
+
 export interface MapPoint {
   ip: string;
   lat: number;
   lon: number;
   city: string;
   country: string;
-  countryCode: string;
-  espName: string;
-  totalCount: number;
-  passedCount: number;
+  esp: string;
+  total: number;
+  passed: number;
 }
 
-export async function loadMapPoints(db: D1Database, domainFilter: string | null): Promise<MapPoint[]> {
-  const dc = domainFilter ? "AND r.domain = ?" : "";
-  const params = domainFilter ? [domainFilter] : [];
-  const res = await db
-    .prepare(
-      `SELECT
-         r.source_ip,
-         e.lat, e.lon, e.city, e.country, e.country_code,
-         COALESCE(e.esp_name, 'Unknown') as esp_name,
-         SUM(r.count) as total_count,
-         SUM(CASE WHEN r.policy_dkim='pass' OR r.policy_spf='pass' THEN r.count ELSE 0 END) as passed_count
-       FROM dmarc_records r
-       JOIN ip_enrichment e ON e.ip = r.source_ip
-       WHERE e.lat IS NOT NULL ${dc}
-       GROUP BY r.source_ip`,
-    )
-    .bind(...params)
-    .all<{
-      source_ip: string;
-      lat: number;
-      lon: number;
-      city: string;
-      country: string;
-      country_code: string;
-      esp_name: string;
-      total_count: number;
-      passed_count: number;
-    }>();
+export async function loadMapPoints(
+  db: D1Database,
+  f: Filters,
+): Promise<{ points: MapPoint[]; unresolved: number }> {
+  const since = sinceEpoch(f.range);
+  const dc = domainFilter("r.domain", f);
 
-  return res.results.map((r) => ({
-    ip: r.source_ip,
-    lat: r.lat,
-    lon: r.lon,
-    city: r.city,
-    country: r.country,
-    countryCode: r.country_code,
-    espName: r.esp_name,
-    totalCount: r.total_count,
-    passedCount: r.passed_count,
-  }));
+  const [points, unresolved] = await Promise.all([
+    db
+      .prepare(
+        `SELECT r.source_ip AS ip, e.lat, e.lon, e.city, e.country, COALESCE(e.esp_name, 'Unknown') AS esp,
+                SUM(r.count) AS total,
+                SUM(CASE WHEN r.policy_dkim = 'pass' OR r.policy_spf = 'pass' THEN r.count ELSE 0 END) AS passed
+           FROM dmarc_records r JOIN ip_enrichment e ON e.ip = r.source_ip
+          WHERE e.lat IS NOT NULL AND r.date_begin >= ?${dc.sql}
+          GROUP BY r.source_ip ORDER BY total DESC LIMIT ${MAX_POINTS}`,
+      )
+      .bind(since, ...dc.params)
+      .all<{ ip: string; lat: number; lon: number; city: string; country: string; esp: string; total: number; passed: number }>(),
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT r.source_ip) AS n
+           FROM dmarc_records r LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
+          WHERE (e.lat IS NULL) AND r.date_begin >= ?${dc.sql}`,
+      )
+      .bind(since, ...dc.params)
+      .first<{ n: number }>(),
+  ]);
+
+  return {
+    points: points.results.map((p) => ({
+      ip: p.ip,
+      lat: p.lat,
+      lon: p.lon,
+      city: p.city ?? "",
+      country: p.country ?? "",
+      esp: p.esp,
+      total: p.total,
+      passed: p.passed,
+    })),
+    unresolved: unresolved?.n ?? 0,
+  };
 }
