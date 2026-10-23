@@ -281,7 +281,8 @@ npm run deploy      # ship changes; also upgrades the database schema on first r
 npm run dev         # local development (copy .dev.vars.example to .dev.vars first)
 npm run tail        # live logs
 npm run typecheck
-npm test            # unit tests (schedule math, settings, message escaping)
+npm test            # unit tests (schedule math, settings, escaping, security)
+npm run vendor      # refresh public/vendor after bumping Chart.js, Leaflet or Inter
 ```
 
 **Updating:** `git pull && npm install && npm run deploy`.
@@ -300,6 +301,9 @@ npm test            # unit tests (schedule math, settings, message escaping)
 - Alert text includes domain and reporter names taken from third-party reports, so everything sent to Slack is escaped. A crafted report cannot inject links or mentions (such as `@channel`).
 - Exports, the summary report and the original report files always require the admin login, and CSV cells that could run as spreadsheet formulas are neutralised.
 - JSON webhook signing secrets are stored encrypted with the webhook list and are never shown again.
+- **Login throttling.** Ten wrong passwords from one address within 15 minutes lock that address out for 15 minutes (HTTP 429, with `Retry-After`). IPv6 clients are grouped by /64. Requests with no credentials, such as a browser's first try, are not counted, and the public dashboard is unaffected.
+- **Content-Security-Policy.** Pages run only scripts that carry a per-response random nonce, can contact only their own origin, and cannot be framed. Report data is escaped as well, so this is a second layer: markup injected through a crafted report still could not run. The Chart.js, Leaflet and Inter files are served from the app itself (`public/vendor`), so the dashboard makes no requests to CDNs; the Sender map page alone also loads OpenStreetMap tiles. Other headers set on every response: `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Strict-Transport-Security`, Cross-Origin policies.
+- The admin credentials are compared in constant time.
 - The public-dashboard switch defaults to **off**.
 
 Found a vulnerability? Please report it privately through GitHub's *Security → Report a vulnerability* rather than a public issue.

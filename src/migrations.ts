@@ -152,6 +152,19 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_records_report ON dmarc_records(report_hash)`,
     ],
   },
+  {
+    id: 5,
+    name: "login attempt throttling",
+    statements: [
+      // One row per client address (IPv6 grouped by /64) that has failed to log in.
+      `CREATE TABLE IF NOT EXISTS auth_attempts (
+        client TEXT PRIMARY KEY,
+        failures INTEGER NOT NULL,
+        window_start INTEGER NOT NULL,
+        locked_until INTEGER NOT NULL
+      )`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;

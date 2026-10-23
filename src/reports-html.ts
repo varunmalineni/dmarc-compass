@@ -38,7 +38,7 @@ export function renderReportsBody(
     .map((r) => {
       const href = withFilters(`/reports/${encodeURIComponent(r.hash)}`, f);
       const problems = [r.flaggedDkim ? "DKIM" : null, r.flaggedSpf ? "SPF" : null].filter(Boolean) as string[];
-      return `<tr class="clickable" onclick="location.href='${href}'">
+      return `<tr class="clickable" data-href="${escapeHtml(href)}">
         <td><a href="${href}" style="color:inherit;text-decoration:none"><code>${escapeHtml(r.reportId.length > 28 ? r.reportId.slice(0, 26) + "…" : r.reportId)}</code></a></td>
         <td>${escapeHtml(r.org)}</td>
         <td>${escapeHtml(r.domain)}</td>

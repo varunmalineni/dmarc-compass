@@ -15,13 +15,17 @@
     "tail": "node scripts/wrangler.mjs tail",
     "demo": "node scripts/seed-demo.mjs --apply",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/*.test.ts\""
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/*.test.ts\"",
+    "vendor": "node scripts/vendor.mjs"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261021.1",
+    "@fontsource-variable/inter": "^5.3.0",
+    "chart.js": "^4.6.1",
+    "leaflet": "^1.9.4",
     "typescript": "^7.0.2",
     "wrangler": "^4.151.3"
   }

@@ -14,6 +14,8 @@ import {
 import { renderAdmin } from "./admin-html";
 import { buildExport, csvStream, exportFilename, DATASETS, type Dataset } from "./exports";
 import { toJsonRows, slug } from "./csv";
+import { addNonce, BASE_HEADERS, clientKey, constantTimeEqual, csp, newNonce } from "./security";
+import { isLocked, recordFailure, retryAfter, type AttemptState } from "./ratelimit";
 import { loadSummary } from "./report-data";
 import { renderSummary } from "./report-html";
 import {
@@ -79,7 +81,7 @@ export class DmarcViewerContainer extends Container<Env> {
     // container restarts with the new environment. It is never reachable
     // from outside; the Worker is the only caller of this class.
     if (url.pathname === "/admin/restart") {
-      if (request.headers.get("x-admin-token") !== creds.password) {
+      if (!constantTimeEqual(request.headers.get("x-admin-token") ?? "", creds.password)) {
         return new Response("Forbidden\n", { status: 403 });
       }
       await this.stop();
@@ -121,18 +123,27 @@ export class DmarcViewerContainer extends Container<Env> {
   }
 }
 
-function hasValidBasicAuth(request: Request, env: Env): boolean {
-  const creds = getAdminCreds(env);
+/** Decodes a Basic Authorization header. Null when absent or malformed. */
+function readBasic(request: Request): { user: string; password: string } | null {
   const auth = request.headers.get("authorization");
-  if (!creds || !auth?.startsWith("Basic ")) return false;
+  if (!auth?.startsWith("Basic ")) return null;
   try {
-    const decoded = atob(auth.slice(6));
+    const decoded = new TextDecoder().decode(Uint8Array.from(atob(auth.slice(6)), (c) => c.charCodeAt(0)));
     const sep = decoded.indexOf(":");
-    if (sep === -1) return false;
-    return decoded.slice(0, sep) === creds.user && decoded.slice(sep + 1) === creds.password;
+    return sep === -1 ? null : { user: decoded.slice(0, sep), password: decoded.slice(sep + 1) };
   } catch {
-    return false;
+    return null;
   }
+}
+
+function credentialsMatch(request: Request, env: Env): boolean {
+  const creds = getAdminCreds(env);
+  const given = readBasic(request);
+  if (!creds || !given) return false;
+  // Both are always compared, so timing does not reveal which one was wrong.
+  const userOk = constantTimeEqual(given.user, creds.user);
+  const passOk = constantTimeEqual(given.password, creds.password);
+  return userOk && passOk;
 }
 
 function challenge(env: Env): Response {
@@ -145,11 +156,49 @@ function challenge(env: Env): Response {
   });
 }
 
+/** Null when the request carries the admin login, otherwise the response to
+ * send. Repeated wrong passwords from one address lock that address out for a
+ * while (HTTP 429); a request with no credentials at all (a browser's first
+ * try before it shows the login prompt) is never counted. */
+async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
+  if (!getAdminCreds(env)) return challenge(env);
+  if (!request.headers.get("authorization")) return challenge(env);
+
+  const client = clientKey(request.headers.get("cf-connecting-ip"));
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare("SELECT failures, window_start, locked_until FROM auth_attempts WHERE client = ?")
+    .bind(client)
+    .first<{ failures: number; window_start: number; locked_until: number }>();
+  const state: AttemptState | null = row ? { failures: row.failures, windowStart: row.window_start, lockedUntil: row.locked_until } : null;
+
+  if (isLocked(state, now)) {
+    return new Response("Too many failed login attempts. Try again later.\n", {
+      status: 429,
+      headers: { "retry-after": String(retryAfter(state as AttemptState, now)) },
+    });
+  }
+  if (credentialsMatch(request, env)) {
+    if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
+    return null;
+  }
+
+  const next = recordFailure(state, now);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO auth_attempts (client, failures, window_start, locked_until) VALUES (?, ?, ?, ?)
+       ON CONFLICT(client) DO UPDATE SET failures = excluded.failures, window_start = excluded.window_start, locked_until = excluded.locked_until`,
+    ).bind(client, next.failures, next.windowStart, next.lockedUntil),
+    // Housekeeping: forget addresses whose window and lock are both over.
+    env.DB.prepare("DELETE FROM auth_attempts WHERE locked_until < ? AND window_start < ?").bind(now, now - 86400),
+  ]);
+  return challenge(env);
+}
+
 /** Gate for the read-only dashboard pages: open when the admin has made the
  * dashboard public, otherwise the admin login is required. */
 async function dashboardGate(request: Request, env: Env): Promise<Response | null> {
   if (await isDashboardPublic(env.DB)) return null;
-  return hasValidBasicAuth(request, env) ? null : challenge(env);
+  return requireAdmin(request, env);
 }
 
 async function restartContainer(env: Env): Promise<void> {
@@ -197,7 +246,8 @@ function jsonError(message: string, status: number): Response {
  * hash changes whenever the container's mailbox settings do, so the report is
  * looked up in the container by its identity (reporter, report ID, domain). */
 async function handleRawReport(request: Request, env: Env, hash: string, format: "xml" | "json"): Promise<Response> {
-  if (!hasValidBasicAuth(request, env)) return challenge(env);
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
 
   const row = await env.DB.prepare("SELECT org_name, report_id, domain FROM dmarc_reports WHERE hash = ?")
     .bind(hash)
@@ -245,7 +295,8 @@ async function handleRawReport(request: Request, env: Env, hash: string, format:
  * of every source IP and sender is more than the page-by-page view of a public
  * dashboard is meant to hand out. */
 async function handleExport(request: Request, env: Env, dataset: Dataset, url: URL): Promise<Response> {
-  if (!hasValidBasicAuth(request, env)) return challenge(env);
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
 
   const f = parseFilters(url);
   const format = url.searchParams.get("format") === "json" ? "json" : "csv";
@@ -287,7 +338,8 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
 
 /** The printable summary report. Admin login only, like the exports. */
 async function handleSummary(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!hasValidBasicAuth(request, env)) return challenge(env);
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
   const f = parseFilters(url);
   const data = await loadSummary(env.DB, f);
   const download = url.searchParams.get("download") === "1";
@@ -311,7 +363,8 @@ async function handleSummary(request: Request, env: Env, url: URL): Promise<Resp
 }
 
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!hasValidBasicAuth(request, env)) return challenge(env);
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
 
   if (request.method === "POST") {
     // CSRF guard: a cross-site <form> can't set a custom header without a CORS
@@ -438,8 +491,35 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   );
 }
 
+/** Adds security headers to every response and a Content-Security-Policy to
+ * pages. The policy's nonce is generated per response and stamped on our own
+ * <script> tags, so nothing injected into a page can run. */
+async function secured(res: Response, url: URL): Promise<Response> {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(BASE_HEADERS)) if (!headers.has(k)) headers.set(k, v);
+
+  const type = headers.get("content-type") ?? "";
+  if (!type.startsWith("text/html") || headers.has("content-security-policy")) {
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  }
+  const nonce = newNonce();
+  headers.set("content-security-policy", csp(nonce, { tiles: url.pathname === "/map" }));
+  headers.delete("content-length");
+  return new Response(addNonce(await res.text(), nonce), { status: res.status, statusText: res.statusText, headers });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    return secured(await route(request, env), new URL(request.url));
+  },
+
+  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    await runScheduled(env);
+  },
+} satisfies ExportedHandler<Env>;
+
+async function route(request: Request, env: Env): Promise<Response> {
+  {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
@@ -505,20 +585,21 @@ export default {
     }
 
     return new Response("Not found\n", { status: 404 });
-  },
+  }
+}
 
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
-    await ensureSchema(env.DB);
+async function runScheduled(env: Env): Promise<void> {
+  await ensureSchema(env.DB);
 
-    if (!getAdminCreds(env) || !isImapConfigured(await getEffectiveImapConfig(env))) {
-      console.log("sync skipped: admin login or mailbox not configured yet");
-      await runNotifications(env);
-      return;
-    }
-    try {
-      console.log("sync result:", JSON.stringify(await runSync(env)));
-    } catch (err) {
-      console.error("sync failed:", err);
-    }
-  },
-} satisfies ExportedHandler<Env>;
+  if (!getAdminCreds(env) || !isImapConfigured(await getEffectiveImapConfig(env))) {
+    console.log("sync skipped: admin login or mailbox not configured yet");
+    await runNotifications(env);
+    return;
+  }
+  try {
+    console.log("sync result:", JSON.stringify(await runSync(env)));
+  } catch (err) {
+    console.error("sync failed:", err);
+  }
+}
+

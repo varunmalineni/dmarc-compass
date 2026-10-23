@@ -21,4 +21,5 @@ jobs:
         run: |
           node --check scripts/setup.mjs
           node --check scripts/wrangler.mjs
+          node --check scripts/vendor.mjs
           python3 -m py_compile scripts/test-imap.py

@@ -2,6 +2,7 @@
 // semantic variables; components only ever reference the variables.
 
 export const STYLES = `
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap; src: url(/vendor/inter-latin-wght-normal.woff2) format('woff2'); }
 :root {
   color-scheme: light;
   --bg: #f4f5f9;
