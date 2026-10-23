@@ -146,7 +146,7 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 | **TLS reports** | SMTP TLS (MTA-STS and DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
 | **Summary report** | A printable one-document summary for the current filters: key findings, trend, domain status, failing senders, policy changes, TLS. Print it to PDF or download it as HTML. |
-| **Admin** | Setup status, mailboxes, notifications, dashboard visibility, manual sync. Always requires login. |
+| **Admin** | Four tabs down the left side: **Setup status**, **Mailboxes**, **Dashboard visibility** and **Notifications** (webhooks, a collapsible **Alert rules** section, and the digest). Each tab has its own link, such as `/admin#notifications`. Always requires login. |
 
 **Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
 

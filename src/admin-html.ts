@@ -44,7 +44,31 @@ const CSS = `
 .switch input:checked + .slider::before { transform: translateX(20px); }
 .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch input:disabled { cursor: wait; }
-main { max-width: 860px; margin: 0 auto; }
+.admin-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
+.admin-tabs { position: sticky; top: 92px; display: flex; flex-direction: column; gap: 2px; }
+.admin-tabs a { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-radius: 9px; color: var(--text-2); text-decoration: none; font-size: 13.5px; font-weight: 600; border: 1px solid transparent; }
+.admin-tabs a:hover { background: var(--surface-2); color: var(--text); }
+.admin-tabs a[aria-current="true"] { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.tab-badge { min-width: 20px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; text-align: center; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+.tab-badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.admin-tabs a[aria-current="true"] .tab-badge:not(.warn) { background: var(--surface); }
+.admin-sections { max-width: 860px; min-width: 0; }
+.admin-sections .panel:last-child { margin-bottom: 0; }
+.fold { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); margin: 22px 0 0; }
+.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: ""; width: 7px; height: 7px; flex: none; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.15s; margin: 0 4px 0 2px; }
+.fold[open] > summary::before { transform: rotate(45deg); }
+.fold > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fold-title { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.fold-note { font-size: 12.5px; color: var(--text-2); margin-left: auto; }
+.fold-body { padding: 0 14px 12px; border-top: 1px solid var(--border); }
+.fold-body .hint:first-child { margin-top: 12px; }
+@media (max-width: 860px) {
+  .admin-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .admin-tabs { position: static; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
+  .admin-tabs a { white-space: nowrap; }
+}
 .rule { display: grid; grid-template-columns: 22px 1fr; gap: 4px 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .rule:last-of-type { border-bottom: none; }
 .rule input[type=checkbox] { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
@@ -159,6 +183,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   );
 
   const n = vm.notify;
+  const rulesOn = Object.values(n.config.rules).filter((r) => r.on).length;
   const notifications = panel(
     "Notifications",
     `<p class="hint" style="margin-top:0">Alerts and a periodic digest, delivered to webhooks: Slack-compatible incoming webhooks (Slack, Mattermost, and others that accept the same format), or any URL that accepts a JSON POST (your own service, n8n, Zapier, a SIEM). Add as many as you like and choose which messages each one receives. Nothing is sent until a webhook is added.</p>
@@ -194,7 +219,9 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     <div class="hint">URLs are stored encrypted and never shown again; only a masked form appears. Up to ${n.hookLimit} webhooks.</div>
     ${n.baseUrlKnown ? "" : '<div class="hint">Messages will link back to this dashboard once you have opened this page once more after adding a webhook.</div>'}
 
-    <div class="sub-h">Alert rules</div>
+    <details class="fold" id="rules-fold">
+      <summary><span class="fold-title">Alert rules</span><span class="fold-note" id="rules-note">${rulesOn} of 4 on</span></summary>
+      <div class="fold-body">
     <div class="hint" style="margin:0 0 4px">Checked after every sync. Each event is reported once.</div>
     <div class="rule">
       <input type="checkbox" id="r-nfs" aria-labelledby="r-nfs-t">
@@ -219,6 +246,8 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       <div class="rule-desc">Syncing is failing or has stopped. Sends a note when it recovers.</div>
       <div class="rule-params">alert after <input class="input" id="r-sync-min" type="number" min="30" aria-label="Minutes without a sync"> minutes without a successful sync</div>
     </div>
+      </div>
+    </details>
 
     <div class="sub-h">Digest</div>
     <div class="row">
@@ -246,7 +275,39 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     <pre class="preview" id="n-preview-out" hidden></pre>`,
   );
 
+  const todo =
+    (s.encryptionKeyConfigured ? 0 : 1) + (s.imapConfigured ? 0 : 1) + (s.lastSync?.ok ? 0 : 1) + (s.reports > 0 ? 0 : 1);
+  const tabs: Array<{ id: string; label: string; badge: string; warn?: boolean; html: string }> = [
+    { id: "status", label: "Setup status", badge: todo ? String(todo) : "", warn: true, html: status },
+    { id: "mailboxes", label: "Mailboxes", badge: mb.rows.length ? String(mb.rows.length) : "", html: imap },
+    { id: "visibility", label: "Dashboard visibility", badge: "", html: visibility },
+    { id: "notifications", label: "Notifications", badge: n.hooks.length ? String(n.hooks.length) : "", html: notifications },
+  ];
+  const adminBody = `<div class="admin-layout">
+    <nav class="admin-tabs" aria-label="Admin sections">${tabs
+      .map(
+        (t) =>
+          `<a href="#${t.id}" data-tab="${t.id}">${escapeHtml(t.label)}<span class="tab-badge${t.warn ? " warn" : ""}" id="badge-${t.id}"${t.badge ? "" : " hidden"}>${t.badge}</span></a>`,
+      )
+      .join("")}</nav>
+    <div class="admin-sections">${tabs.map((t) => `<section class="admin-section" id="tab-${t.id}" data-tab="${t.id}" aria-label="${escapeHtml(t.label)}">${t.html}</section>`).join("")}</div>
+  </div>`;
+
   const scripts = `
+  // Section tabs. Without scripts every section is shown, one after another.
+  var TAB_IDS=${safeJson(tabs.map((t) => t.id))};
+  // Setup status is drawn by the server. When a mailbox or a sync has changed what it
+  // reports, the page reloads when you open that tab, so it never shows old information.
+  var statusStale=false;
+  function showTab(id){
+    if(TAB_IDS.indexOf(id)<0)id=TAB_IDS[0];
+    if(id==='status'&&statusStale){statusStale=false;location.reload();return}
+    document.querySelectorAll('.admin-section').forEach(function(sec){sec.hidden=sec.getAttribute('data-tab')!==id});
+    document.querySelectorAll('.admin-tabs a').forEach(function(a){if(a.getAttribute('data-tab')===id)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')});
+  }
+  function setBadge(id,n){var b=document.getElementById('badge-'+id);if(!b)return;b.textContent=n?String(n):'';b.hidden=!n}
+  showTab(location.hash.slice(1));
+  window.addEventListener('hashchange',function(){showTab(location.hash.slice(1))});
   // Every write carries a custom header. A cross-site <form> can't set one
   // without a CORS preflight (which this app never allows), which is what
   // protects these endpoints from CSRF alongside Basic Auth.
@@ -261,8 +322,8 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   document.getElementById('sync-btn').addEventListener('click',function(e){
     var b=e.target,m=document.getElementById('sync-msg');b.disabled=true;m.className='msg';
     m.textContent='Syncing. With several mailboxes this can take a few minutes: the parser reads them one at a time...';
-    post({action:'sync'}).then(function(t){var o=JSON.parse(t);var bad=(o.mailboxes||[]).filter(function(x){return !x.ok});say(m,!bad.length,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports'+(bad.length?'. Problems: '+bad.map(function(x){return x.name+' ('+x.error+')'}).join('; '):'')+'. Reload to refresh the status above.')})
-      .catch(function(err){say(m,false,'Sync failed: '+err.message)}).finally(function(){b.disabled=false});
+    post({action:'sync'}).then(function(t){statusStale=true;var o=JSON.parse(t);var bad=(o.mailboxes||[]).filter(function(x){return !x.ok});say(m,!bad.length,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports'+(bad.length?'. Problems: '+bad.map(function(x){return x.name+' ('+x.error+')'}).join('; '):'')+'. Reload to refresh the status above.')})
+      .catch(function(err){statusStale=true;say(m,false,'Sync failed: '+err.message)}).finally(function(){b.disabled=false});
   });
   var MB=${safeJson({ rows: mb.rows, canSave: mb.canSave })};
   (function(){
@@ -271,7 +332,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
     function rel(at){var s=Math.max(0,Date.now()/1000-at);if(s<90)return 'just now';if(s<3600)return Math.round(s/60)+' min ago';if(s<172800)return Math.round(s/3600)+' hours ago';return Math.round(s/86400)+' days ago'}
     function render(){
-      box.textContent='';$('mailboxes-empty').hidden=MB.rows.length>0;
+      box.textContent='';$('mailboxes-empty').hidden=MB.rows.length>0;setBadge('mailboxes',MB.rows.length);
       MB.rows.forEach(function(m){
         var row=el('div','hook');row.setAttribute('data-id',m.id);
         var main=el('div','hook-main');
@@ -295,7 +356,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     function busy(b){box.querySelectorAll('button').forEach(function(e){e.disabled=b});$('mb-save').disabled=b||!MB.canSave}
     function run(label,body,done){
       busy(true);msg.className='msg';msg.textContent=label;
-      post(body).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();done(r)})
+      post(body).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();statusStale=true;done(r)})
         .catch(function(err){say(msg,false,err.message);return post({action:'mailboxes_state'}).then(function(t){MB.rows=JSON.parse(t).mailboxes.rows;render()}).catch(function(){})})
         .finally(function(){busy(false)});
     }
@@ -307,7 +368,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       var m=MB.rows.filter(function(x){return x.id===id})[0];var act=b.getAttribute('data-act');
       if(act==='test'){
         busy(true);msg.className='msg';msg.textContent='Connecting to '+m.host+'...';
-        post({action:'mailbox_test',id:id}).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();say(msg,true,m.name+': login works and the folder opened.')})
+        post({action:'mailbox_test',id:id}).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();statusStale=true;say(msg,true,m.name+': login works and the folder opened.')})
           .catch(function(err){say(msg,false,m.name+': '+err.message);return post({action:'mailboxes_state'}).then(function(t){MB.rows=JSON.parse(t).mailboxes.rows;render()}).catch(function(){})})
           .finally(function(){busy(false)});
       }else if(act==='edit'){
@@ -358,6 +419,8 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       if(!at){el.textContent='';return}
       try{el.textContent='Next digest: '+new Date(at*1000).toLocaleString('en-US',{timeZone:$('d-tz').value,weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})+'. It is sent within 15 minutes of that time.'}catch(e){el.textContent=''}
     }
+    function rulesNote(){var n=['r-nfs','r-drop','r-pol','r-sync'].filter(function(i){return $(i).checked}).length;$('rules-note').textContent=n+' of 4 on'}
+    ['r-nfs','r-drop','r-pol','r-sync'].forEach(function(i){$(i).addEventListener('change',rulesNote)});rulesNote();
     $('d-mode').addEventListener('change',function(){showFields();showNext(null)});
     showFields();showNext(N.nextDigestAt);
 
@@ -375,7 +438,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     function check(cls,label,on,disabled){var l=el('label','check-inline');var i=document.createElement('input');i.type='checkbox';i.className=cls;i.checked=on;i.disabled=!!disabled;l.appendChild(i);l.appendChild(document.createTextNode(' '+label));return l}
     function renderHooks(){
       box.textContent='';
-      $('hooks-empty').hidden=N.hooks.length>0;
+      $('hooks-empty').hidden=N.hooks.length>0;setBadge('notifications',N.hooks.length);
       N.hooks.forEach(function(h){
         var secret=h.source==='secret';
         var row=el('div','hook');row.setAttribute('data-id',h.id);
@@ -471,10 +534,10 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
 
   return layout({
     title: "Admin",
-    subtitle: "Setup, mailbox and visibility. Requires the admin login.",
+    subtitle: "Setup, mailboxes, notifications and visibility. Requires the admin login.",
     active: "admin",
     url,
-    body: `${status}${visibility}${notifications}${imap}`,
+    body: adminBody,
     scripts,
     css: CSS,
   });
