@@ -12,6 +12,10 @@ import {
   type ConfigKey,
 } from "./settings-data";
 import { renderAdmin } from "./admin-html";
+import { buildExport, csvStream, exportFilename, DATASETS, type Dataset } from "./exports";
+import { toJsonRows, slug } from "./csv";
+import { loadSummary } from "./report-data";
+import { renderSummary } from "./report-html";
 import {
   addWebhook,
   getNotifyView,
@@ -33,7 +37,7 @@ import { renderMapBody } from "./map-html";
 import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
 import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync } from "./app-settings";
 import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
-import { parseFilters, parseList, scopeLabel, rangeLabel } from "./filters";
+import { parseFilters, parseList, scopeLabel, rangeLabel, withFilters } from "./filters";
 import { layout } from "./shared-ui";
 
 interface Env extends AdminEnv {
@@ -237,6 +241,75 @@ async function handleRawReport(request: Request, env: Env, hash: string, format:
   });
 }
 
+/** Table exports as CSV or JSON. Always behind the admin login: a bulk export
+ * of every source IP and sender is more than the page-by-page view of a public
+ * dashboard is meant to hand out. */
+async function handleExport(request: Request, env: Env, dataset: Dataset, url: URL): Promise<Response> {
+  if (!hasValidBasicAuth(request, env)) return challenge(env);
+
+  const f = parseFilters(url);
+  const format = url.searchParams.get("format") === "json" ? "json" : "csv";
+  const problem = url.searchParams.get("filter");
+  const result = await buildExport(env.DB, dataset, {
+    filters: f,
+    q: (url.searchParams.get("q") ?? "").trim().slice(0, 100),
+    problem: problem === "dkim" || problem === "spf" || problem === "any" ? problem : "all",
+  });
+
+  const headers: Record<string, string> = {
+    "content-disposition": `attachment; filename="${exportFilename(dataset, f, format)}"`,
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-store",
+    "x-export-rows": String(result.rows.length),
+    "x-export-truncated": String(result.truncated),
+  };
+  if (format === "json") {
+    return new Response(
+      JSON.stringify(
+        {
+          dataset,
+          generated_at: new Date().toISOString(),
+          scope: { domains: f.domains, range_days: f.range },
+          truncated: result.truncated,
+          count: result.rows.length,
+          rows: toJsonRows(result.columns, result.rows),
+        },
+        null,
+        1,
+      ),
+      { headers: { ...headers, "content-type": "application/json; charset=utf-8" } },
+    );
+  }
+  return new Response(csvStream(result.columns, result.rows), {
+    headers: { ...headers, "content-type": "text/csv; charset=utf-8" },
+  });
+}
+
+/** The printable summary report. Admin login only, like the exports. */
+async function handleSummary(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!hasValidBasicAuth(request, env)) return challenge(env);
+  const f = parseFilters(url);
+  const data = await loadSummary(env.DB, f);
+  const download = url.searchParams.get("download") === "1";
+  const keep = withFilters("/report", f);
+  const html = renderSummary(data, {
+    downloadHref: keep + (keep.includes("?") ? "&" : "?") + "download=1",
+    backHref: withFilters("/", f),
+  });
+  const scope = f.domains.length === 0 ? "all-domains" : f.domains.length === 1 ? slug(f.domains[0]) : `${f.domains.length}-domains`;
+  const range = f.range === null ? "all-time" : `last-${f.range}d`;
+  return new Response(html, {
+    headers: {
+      ...HTML,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+      ...(download
+        ? { "content-disposition": `attachment; filename="dmarc-compass_summary_${scope}_${range}_${new Date().toISOString().slice(0, 10)}.html"` }
+        : {}),
+    },
+  });
+}
+
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
   if (!hasValidBasicAuth(request, env)) return challenge(env);
 
@@ -272,12 +345,13 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       return res.ok ? notifyState() : jsonError(res.error, 400);
     }
     if (body.action === "webhook_add") {
-      const res = await addWebhook(env, { url: body.url, name: body.name, alerts: optBool(body.alerts), digest: optBool(body.digest) });
+      const res = await addWebhook(env, { url: body.url, name: body.name, type: body.type, secret: body.secret, alerts: optBool(body.alerts), digest: optBool(body.digest) });
       return res.ok ? notifyState() : jsonError(res.error, 400);
     }
     if (body.action === "webhook_update") {
       const res = await updateWebhook(env, str(body.id), {
         name: typeof body.name === "string" ? body.name : undefined,
+        secret: typeof body.secret === "string" ? body.secret : undefined,
         alerts: optBool(body.alerts),
         digest: optBool(body.digest),
       });
@@ -373,6 +447,13 @@ export default {
 
     if (pathname === "/admin") return handleAdmin(request, env, url);
 
+    if (pathname === "/report") return handleSummary(request, env, url);
+
+    const exportMatch = pathname.match(/^\/export\/([a-z-]+)$/);
+    if (exportMatch && (DATASETS as readonly string[]).includes(exportMatch[1])) {
+      return handleExport(request, env, exportMatch[1] as Dataset, url);
+    }
+
     const rawMatch = pathname.match(/^\/reports\/([^/]+)\/(xml|json)$/);
     if (rawMatch) return handleRawReport(request, env, decodeURIComponent(rawMatch[1]), rawMatch[2] as "xml" | "json");
 
@@ -414,7 +495,7 @@ export default {
 
     if (pathname === "/tls-reports") {
       const [data, chrome] = await Promise.all([loadTls(env.DB, f), loadChrome(env.DB)]);
-      return page({ title: "TLS reports", subtitle: scope, active: "tls", url, filters: f, chrome, body: renderTlsBody(data, f) });
+      return page({ title: "TLS reports", subtitle: scope, active: "tls", url, filters: f, chrome, body: renderTlsBody(data, f, url) });
     }
 
     if (pathname === "/map") {

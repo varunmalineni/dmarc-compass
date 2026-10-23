@@ -1,7 +1,7 @@
 import type { DomainsData, DomainRow, DomainStatus } from "./domains-data";
 import { DOMAINS_PAGE_SIZE } from "./domains-data";
 import { withFilters, rangeLabel, type Filters, type ListState } from "./filters";
-import { escapeHtml, fmtDate, fmtNumber, rateCell, emptyState, pagination, sortTh, searchForm, urlWith } from "./shared-ui";
+import { escapeHtml, fmtDate, fmtNumber, rateCell, emptyState, pagination, sortTh, searchForm, exportMenu, urlWith } from "./shared-ui";
 
 const STATUS: Record<DomainStatus, { label: string; tone: string }> = {
   enforced: { label: "Enforced", tone: "good" },
@@ -53,7 +53,8 @@ export function renderDomainsBody(data: DomainsData, f: Filters, list: ListState
   return `${kpis}
   <section class="panel">
     <div class="panel-head"><div><h2 class="panel-title">All domains</h2><div class="panel-sub">${escapeHtml(rangeLabel(f.range))} &middot; domains with the most failing messages first</div></div>
-      ${searchForm({ action: "/domains", filters: f, list, placeholder: "Search domains" })}
+      <div class="head-tools">${searchForm({ action: "/domains", filters: f, list, placeholder: "Search domains" })}
+      ${exportMenu(url, [{ dataset: "domains", label: "Domains" }])}</div>
     </div>
     <div class="panel-body flush">${table}</div>
     ${pagination({ page: list.page, pageSize: DOMAINS_PAGE_SIZE, total: data.total, noun: "domains", href: (p) => urlWith(url, { page: String(p) }) })}

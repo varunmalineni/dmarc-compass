@@ -12,7 +12,7 @@ function must<T extends { ok: boolean }>(r: T): Extract<T, { ok: true }> {
 
 test("add: validates, defaults to receiving everything, and sanitises the nickname", () => {
   const r = must(addHook([], { url: URL1, name: "  #alerts \n" }, "a1"));
-  assert.deepEqual(r.hook, { id: "a1", name: "#alerts", url: URL1, alerts: true, digest: true });
+  assert.deepEqual(r.hook, { id: "a1", type: "slack", name: "#alerts", url: URL1, secret: "", alerts: true, digest: true });
   assert.equal(r.list.length, 1);
 });
 
@@ -73,7 +73,7 @@ test("receiving: alerts and digest are routed independently", () => {
 test("parse: tolerates garbage, skips bad entries, de-duplicates ids", () => {
   assert.deepEqual(parseHooks("not json"), []);
   assert.deepEqual(parseHooks('{"a":1}'), []);
-  const good = { id: "a", name: "ok", url: URL1, alerts: true, digest: false };
+  const good = { id: "a", type: "slack", name: "ok", url: URL1, secret: "", alerts: true, digest: false };
   const parsed = parseHooks(JSON.stringify([good, null, 5, { id: "b", url: "http://insecure" }, { url: URL2 }, good, { id: "c", url: URL2, name: 7 }]));
   assert.deepEqual(parsed.map((h) => h.id), ["a", "c"]);
   assert.equal(parsed[0].digest, false);
@@ -81,7 +81,45 @@ test("parse: tolerates garbage, skips bad entries, de-duplicates ids", () => {
 });
 
 test("view never exposes the URL, only a masked form", () => {
-  const v = toView({ id: "a", name: "n", url: URL1, alerts: true, digest: true }, "saved");
+  const v = toView({ id: "a", type: "slack", name: "n", url: URL1, secret: "", alerts: true, digest: true }, "saved");
   assert.equal(v.masked, "https://hooks.slack.com/••••1111");
   assert.ok(!JSON.stringify(v).includes("T1/B1"));
+});
+
+test("json webhooks: type is kept, the secret is trimmed, and slack hooks never carry one", () => {
+  const j = must(addHook([], { url: URL1, type: "json", secret: "  s3cret  " }, "j"));
+  assert.equal(j.hook.type, "json");
+  assert.equal(j.hook.secret, "s3cret");
+  const s = must(addHook([], { url: URL2, type: "slack", secret: "ignored" }, "s"));
+  assert.equal(s.hook.secret, "");
+  assert.equal(must(addHook([], { url: URL1, type: "bogus" }, "x")).hook.type, "slack");
+});
+
+test("json webhooks: updating the secret keeps, replaces or removes it", () => {
+  const list = must(addHook([], { url: URL1, type: "json", secret: "one" }, "j")).list;
+  assert.equal(must(updateHook(list, "j", { name: "n" })).list[0].secret, "one"); // untouched
+  assert.equal(must(updateHook(list, "j", { secret: "two" })).list[0].secret, "two");
+  assert.equal(must(updateHook(list, "j", { secret: "" })).list[0].secret, ""); // removed
+  const slack = must(addHook([], { url: URL2 }, "s")).list;
+  assert.equal(must(updateHook(slack, "s", { secret: "nope" })).list[0].secret, ""); // slack hooks ignore it
+});
+
+test("json webhooks: the view says whether it is signed, without exposing the secret", () => {
+  const h = must(addHook([], { url: URL1, type: "json", secret: "topsecret" }, "j")).hook;
+  const v = toView(h, "saved");
+  assert.equal(v.signed, true);
+  assert.equal(v.type, "json");
+  assert.ok(!JSON.stringify(v).includes("topsecret"));
+});
+
+test("parse: lists saved before types existed load as slack webhooks", () => {
+  const old = JSON.stringify([{ id: "h1", name: "Old", url: URL1, alerts: true, digest: true }]);
+  const [h] = parseHooks(old);
+  assert.equal(h.type, "slack");
+  assert.equal(h.secret, "");
+});
+
+test("parse: a stored json hook keeps its secret", () => {
+  const [h] = parseHooks(JSON.stringify([{ id: "j", type: "json", url: URL1, secret: "abc" }]));
+  assert.equal(h.secret, "abc");
 });

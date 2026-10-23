@@ -152,7 +152,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   const n = vm.notify;
   const notifications = panel(
     "Notifications",
-    `<p class="hint" style="margin-top:0">Alerts and a periodic digest, delivered to Slack-compatible incoming webhooks (Slack, Mattermost, and others that accept the same format). Add as many as you like and choose which messages each one receives. Nothing is sent until a webhook is added.</p>
+    `<p class="hint" style="margin-top:0">Alerts and a periodic digest, delivered to webhooks: Slack-compatible incoming webhooks (Slack, Mattermost, and others that accept the same format), or any URL that accepts a JSON POST (your own service, n8n, Zapier, a SIEM). Add as many as you like and choose which messages each one receives. Nothing is sent until a webhook is added.</p>
     ${n.canSaveWebhook ? "" : '<div class="warn-box">Saving a webhook here needs the <code>CONFIG_ENCRYPTION_KEY</code> secret (see Setup status). You can instead set a <code>SLACK_WEBHOOK_URL</code> Worker secret, which appears here as a read-only webhook.</div>'}
 
     <div class="sub-h">Webhooks</div>
@@ -161,11 +161,20 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     <form class="hook-add" id="hook-add" autocomplete="off">
       <div class="hook-add-title">Add a webhook</div>
       <div class="row">
+        <label for="h-type" class="sr-only">Type</label>
+        <select class="input" id="h-type" ${n.canSaveWebhook ? "" : "disabled"}>
+          <option value="slack">Slack-compatible</option>
+          <option value="json">JSON (any URL)</option>
+        </select>
         <label for="h-name" class="sr-only">Nickname</label>
         <input class="input" id="h-name" type="text" maxlength="40" placeholder="Nickname (optional), e.g. #dmarc-alerts" style="width:260px" ${n.canSaveWebhook ? "" : "disabled"}>
         <label for="h-url" class="sr-only">Webhook URL</label>
         <input class="input" id="h-url" type="password" placeholder="https://hooks.slack.com/services/..." style="width:340px" ${n.canSaveWebhook ? "" : "disabled"}>
         <button class="btn" id="h-add" type="submit" ${n.canSaveWebhook ? "" : "disabled"}>Add webhook</button>
+      </div>
+      <div class="row" id="h-secret-row" hidden>
+        <label for="h-secret" class="sr-only">Signing secret</label>
+        <input class="input" id="h-secret" type="password" autocomplete="off" placeholder="Signing secret (optional): requests carry an HMAC-SHA256 signature" style="width:520px">
       </div>
       <div class="row" style="margin-bottom:0">
         <span class="muted small">Send to this webhook:</span>
@@ -307,10 +316,13 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
         var main=el('div','hook-main');
         var name=el('input','input hook-name');name.type='text';name.maxLength=40;name.value=h.name;name.placeholder='Unnamed webhook';name.setAttribute('aria-label','Nickname');name.disabled=secret;
         main.appendChild(name);main.appendChild(el('code','hook-url',h.masked));
+        main.appendChild(el('span','pill secret',h.type==='json'?'JSON':'Slack'));
+        if(h.type==='json'&&h.signed)main.appendChild(el('span','pill saved','signed'));
         if(secret)main.appendChild(el('span','pill secret','Worker secret'));
         row.appendChild(main);
         var act=el('div','hook-actions');
         var t=el('button','btn secondary','Test');t.type='button';t.setAttribute('data-act','test');act.appendChild(t);
+        if(h.type==='json'&&!secret){var k=el('button','btn secondary',h.signed?'Change secret':'Set secret');k.type='button';k.setAttribute('data-act','secret');act.appendChild(k)}
         if(!secret){var r=el('button','btn secondary danger','Remove');r.type='button';r.setAttribute('data-act','remove');act.appendChild(r)}
         row.appendChild(act);
         var routes=el('div','hook-routes');routes.appendChild(check('h-a','Alerts',h.alerts,secret));routes.appendChild(check('h-d','Digest',h.digest,secret));
@@ -352,6 +364,11 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       var b=e.target.closest('button[data-act]');if(!b)return;
       var row=b.closest('.hook'),id=row.getAttribute('data-id');
       var h=N.hooks.filter(function(x){return x.id===id})[0],label=(h&&h.name)||(h&&h.masked)||'this webhook';
+      if(b.getAttribute('data-act')==='secret'){
+        var v=prompt('Signing secret for '+label+'. Requests are signed with HMAC-SHA256 using this secret. Leave empty to turn signing off.','');
+        if(v===null)return;
+        update(id,{secret:v},v?'Signing secret saved.':'Signing turned off.');return;
+      }
       if(b.getAttribute('data-act')==='test'){
         run('Sending a test message...',{action:'webhook_test',id:id},function(t){adopt(t);say(msg,true,'Test message sent to '+label+'.')},true);
       }else{
@@ -362,9 +379,14 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     $('hook-add').addEventListener('submit',function(e){
       e.preventDefault();var url=$('h-url').value.trim();
       if(!url){say(msg,false,'Paste the webhook URL.');return}
-      run('Adding...',{action:'webhook_add',url:url,name:$('h-name').value,alerts:$('h-alerts').checked,digest:$('h-digest').checked},function(t){
-        adopt(t);$('h-url').value='';$('h-name').value='';say(msg,true,'Webhook added. Use Test to check that a message arrives.');
+      run('Adding...',{action:'webhook_add',url:url,name:$('h-name').value,type:$('h-type').value,secret:$('h-secret').value,alerts:$('h-alerts').checked,digest:$('h-digest').checked},function(t){
+        adopt(t);$('h-url').value='';$('h-name').value='';$('h-secret').value='';say(msg,true,'Webhook added. Use Test to check that a message arrives.');
       });
+    });
+    $('h-type').addEventListener('change',function(){
+      var j=$('h-type').value==='json';
+      $('h-secret-row').hidden=!j;
+      $('h-url').placeholder=j?'https://example.com/your/endpoint':'https://hooks.slack.com/services/...';
     });
     $('n-save').addEventListener('click',function(){
       run('Saving...',{action:'notify_save',config:config()},function(t){adopt(t);say(msg,true,'Saved.')});

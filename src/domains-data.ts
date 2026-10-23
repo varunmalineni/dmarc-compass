@@ -40,7 +40,12 @@ function asPolicy(p: string | null): DomainRow["policy"] {
   return p === "reject" || p === "quarantine" || p === "none" ? p : null;
 }
 
-export async function loadDomains(db: D1Database, f: Filters, list: ListState): Promise<DomainsData> {
+export async function loadDomains(
+  db: D1Database,
+  f: Filters,
+  list: ListState,
+  opts: { all?: boolean } = {},
+): Promise<DomainsData> {
   const now = Math.floor(Date.now() / 1000);
   const since = sinceEpoch(f.range, now);
   const rc = domainFilter("r.domain", f);
@@ -117,6 +122,7 @@ export async function loadDomains(db: D1Database, f: Filters, list: ListState): 
   rows.sort((a, b) => (cmp[list.sort] ?? cmp.risk)(a, b) || a.domain.localeCompare(b.domain));
 
   const total = rows.length;
+  if (opts.all) return { rows, total, summary };
   const start = (list.page - 1) * DOMAINS_PAGE_SIZE;
   return { rows: rows.slice(start, start + DOMAINS_PAGE_SIZE), total, summary };
 }

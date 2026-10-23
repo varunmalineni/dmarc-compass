@@ -3,11 +3,17 @@
 
 import { maskWebhook, sanitizeNickname, validateWebhookUrl } from "./notify-config.ts";
 
+export type HookType = "slack" | "json";
+
 export interface Hook {
   id: string;
+  /** Slack-compatible message blocks, or a plain JSON document. */
+  type: HookType;
   /** Optional label shown in the admin UI. */
   name: string;
   url: string;
+  /** JSON webhooks only: HMAC key used to sign each request. Empty means unsigned. */
+  secret: string;
   /** Receives alerts. */
   alerts: boolean;
   /** Receives the digest. */
@@ -22,6 +28,16 @@ function flag(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
 
+const MAX_SECRET = 200;
+
+function kind(v: unknown, fallback: HookType = "slack"): HookType {
+  return v === "json" || v === "slack" ? v : fallback;
+}
+
+function secretOf(v: unknown): string {
+  return typeof v === "string" ? v.trim().slice(0, MAX_SECRET) : "";
+}
+
 function normalised(url: string): string {
   try {
     return new URL(url).toString();
@@ -32,7 +48,7 @@ function normalised(url: string): string {
 
 export function addHook(
   list: Hook[],
-  input: { url: unknown; name?: unknown; alerts?: unknown; digest?: unknown },
+  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
   id: string,
 ): Result<{ list: Hook[]; hook: Hook }> {
   if (list.length >= MAX_HOOKS) return { ok: false, error: `You can have at most ${MAX_HOOKS} webhooks.` };
@@ -40,10 +56,13 @@ export function addHook(
   const v = validateWebhookUrl(input.url);
   if (!v.ok) return v;
   if (list.some((h) => normalised(h.url) === v.url)) return { ok: false, error: "That webhook is already in the list." };
+  const type = kind(input.type);
   const hook: Hook = {
     id,
+    type,
     name: sanitizeNickname(input.name),
     url: v.url,
+    secret: type === "json" ? secretOf(input.secret) : "",
     alerts: flag(input.alerts, true),
     digest: flag(input.digest, true),
   };
@@ -53,7 +72,7 @@ export function addHook(
 export function updateHook(
   list: Hook[],
   id: string,
-  patch: { name?: unknown; alerts?: unknown; digest?: unknown },
+  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
 ): Result<{ list: Hook[] }> {
   if (!list.some((h) => h.id === id)) return { ok: false, error: "That webhook no longer exists." };
   return {
@@ -64,6 +83,8 @@ export function updateHook(
         : {
             ...h,
             name: patch.name === undefined ? h.name : sanitizeNickname(patch.name),
+            // undefined keeps the current secret; an empty string removes it. Slack hooks have none.
+            secret: h.type !== "json" || patch.secret === undefined ? h.secret : secretOf(patch.secret),
             alerts: flag(patch.alerts, h.alerts),
             digest: flag(patch.digest, h.digest),
           },
@@ -93,7 +114,16 @@ export function parseHooks(json: string): Hook[] {
     if (typeof h.id !== "string" || !h.id || seen.has(h.id)) continue;
     if (typeof h.url !== "string" || !validateWebhookUrl(h.url).ok) continue;
     seen.add(h.id);
-    out.push({ id: h.id, name: sanitizeNickname(h.name), url: h.url, alerts: flag(h.alerts, true), digest: flag(h.digest, true) });
+    const type = kind(h.type);
+    out.push({
+      id: h.id,
+      type,
+      name: sanitizeNickname(h.name),
+      url: h.url,
+      secret: type === "json" ? secretOf(h.secret) : "",
+      alerts: flag(h.alerts, true),
+      digest: flag(h.digest, true),
+    });
     if (out.length >= MAX_HOOKS) break;
   }
   return out;
@@ -106,7 +136,10 @@ export function receiving(kind: "alerts" | "digest", hooks: Hook[]): Hook[] {
 /** What the admin UI needs to know about a hook, without the URL. */
 export interface HookView {
   id: string;
+  type: HookType;
   name: string;
+  /** Whether requests are signed. The secret itself is never exposed. */
+  signed: boolean;
   masked: string;
   alerts: boolean;
   digest: boolean;
@@ -115,5 +148,5 @@ export interface HookView {
 }
 
 export function toView(h: Hook, source: "saved" | "secret"): HookView {
-  return { id: h.id, name: h.name, masked: maskWebhook(h.url), alerts: h.alerts, digest: h.digest, source };
+  return { id: h.id, type: h.type, name: h.name, signed: Boolean(h.secret), masked: maskWebhook(h.url), alerts: h.alerts, digest: h.digest, source };
 }

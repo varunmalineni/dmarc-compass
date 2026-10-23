@@ -12,6 +12,8 @@ import { getAppSetting, setAppSetting, getLastSync } from "./app-settings";
 import { encryptValue, decryptValue } from "./crypto-util";
 import { sanitizeConfig, maskWebhook, DEFAULT_CONFIG, type NotifyConfig } from "./notify-config";
 import { addHook, parseHooks, receiving, removeHook, toView, updateHook, type Hook, type HookView, MAX_HOOKS } from "./webhooks";
+import { alertsPayload, digestPayload, testPayload } from "./payloads";
+import { webhookHeaders } from "./sign";
 import { digestDue, digestPeriodDays, nextSlot } from "./digest-schedule";
 import { loadDomains } from "./domains-data";
 import {
@@ -63,6 +65,8 @@ export interface Alert {
   /** Larger sorts first within a rule. */
   weight: number;
   cooldown: number;
+  /** The same facts as `line`, for machine consumers (JSON webhooks, the summary report). */
+  data: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------- settings --
@@ -126,7 +130,7 @@ export async function getDestinations(env: NotifyEnv): Promise<Destination[]> {
   const saved: Destination[] = (await loadSavedHooks(env)).map((h) => ({ ...h, source: "saved" }));
   const secret = env.SLACK_WEBHOOK_URL;
   if (secret && !saved.some((h) => h.url === secret)) {
-    saved.push({ id: "secret", name: "Worker secret", url: secret, alerts: true, digest: true, source: "secret" });
+    saved.push({ id: "secret", type: "slack", name: "Worker secret", url: secret, secret: "", alerts: true, digest: true, source: "secret" });
   }
   return saved;
 }
@@ -220,7 +224,7 @@ function needKey(env: NotifyEnv): Done | null {
 
 export async function addWebhook(
   env: NotifyEnv,
-  input: { url: unknown; name?: unknown; alerts?: unknown; digest?: unknown },
+  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
 ): Promise<Done> {
   const missing = needKey(env);
   if (missing) return missing;
@@ -243,7 +247,7 @@ export async function addWebhook(
 export async function updateWebhook(
   env: NotifyEnv,
   id: string,
-  patch: { name?: unknown; alerts?: unknown; digest?: unknown },
+  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
 ): Promise<Done> {
   const missing = needKey(env);
   if (missing) return missing;
@@ -267,35 +271,47 @@ export async function removeWebhook(env: NotifyEnv, id: string): Promise<Done> {
 
 // ---------------------------------------------------------------- delivery --
 
-export async function postSlack(url: string, message: SlackMessage): Promise<{ ok: true } | { ok: false; error: string }> {
+type Posted = { ok: true } | { ok: false; error: string };
+
+async function post(url: string, headers: Record<string, string>, body: string): Promise<Posted> {
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(message),
-      signal: AbortSignal.timeout(8000),
-    });
+    const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(8000) });
     if (res.ok) return { ok: true };
-    const body = (await res.text().catch(() => "")).slice(0, 100);
-    return { ok: false, error: `The webhook answered ${res.status}${body ? `: ${body}` : ""}` };
+    const text = (await res.text().catch(() => "")).slice(0, 100);
+    return { ok: false, error: `The webhook answered ${res.status}${text ? `: ${text}` : ""}` };
   } catch (err) {
     // The URL is a credential: never include it in an error.
     return { ok: false, error: `Could not reach the webhook (${err instanceof Error ? err.name : "error"}).` };
   }
 }
 
+/** One notification in both shapes: Slack blocks, and a JSON document. */
+export interface Content {
+  slack: SlackMessage;
+  event: "alerts" | "digest" | "test";
+  json: unknown;
+}
+
+async function send(hook: Hook, c: Content): Promise<Posted> {
+  if (hook.type === "json") {
+    const body = JSON.stringify(c.json);
+    return post(hook.url, await webhookHeaders(c.event, body, hook.secret), body);
+  }
+  return post(hook.url, { "content-type": "application/json" }, JSON.stringify(c.slack));
+}
+
 const hookLabel = (d: Hook) => d.name || maskWebhook(d.url);
 
-/** Sends one message to several webhooks and records how each one went. */
+/** Sends one notification to several webhooks and records how each one went. */
 async function deliver(
   env: NotifyEnv,
   targets: Hook[],
   kind: HookResult["kind"],
-  message: SlackMessage,
+  content: Content,
   okDetail: string,
 ): Promise<{ sent: number; errors: string[] }> {
   const at = Math.floor(Date.now() / 1000);
-  const outcomes = await Promise.all(targets.map((t) => postSlack(t.url, message)));
+  const outcomes = await Promise.all(targets.map((t) => send(t, content)));
   const entries: Array<[string, HookResult]> = [];
   const errors: string[] = [];
   let sent = 0;
@@ -322,7 +338,7 @@ function chunks<T>(arr: T[], size: number): T[][] {
 }
 
 /** A source failing DMARC for a domain it was not seen on before. */
-async function newFailingSenders(
+export async function newFailingSenders(
   db: D1Database,
   win: { kind: "cursor"; cursor: number } | { kind: "period"; since: number },
   minMessages: number,
@@ -361,6 +377,7 @@ async function newFailingSenders(
     key: `nfs:${r.domain}:${r.ip}`,
     weight: r.failing,
     cooldown: COOLDOWN.newSender,
+    data: { domain: r.domain, source_ip: r.ip, sender: r.esp, failing_messages: r.failing, total_messages: r.total },
     line: `• *${safe(r.domain)}*  ${safe(r.esp, 40)} \`${safe(r.ip, 45)}\`  ${num(r.failing)} failing of ${num(r.total)} messages`,
   }));
 }
@@ -401,6 +418,7 @@ async function passRateDrops(
       key: `drop:${r.domain}`,
       weight: drop,
       cooldown: COOLDOWN.drop,
+      data: { domain: r.domain, previous_pass_rate_pct: round2(prev), current_pass_rate_pct: round2(cur), drop_points: round2(drop), messages_this_week: r.cur_total },
       line: `• *${safe(r.domain)}*  ${pct(prev)} → ${pct(cur)} (-${drop.toFixed(1)} pts, ${num(r.cur_total)} messages this week)`,
     });
   }
@@ -409,7 +427,7 @@ async function passRateDrops(
 
 /** A domain's published p= or pct= changed. Reporters see a change at different
  * times, so each day takes the strictest value reported that day. */
-async function policyChanges(db: D1Database, cursor: number, since: number): Promise<Alert[]> {
+export async function policyChanges(db: D1Database, cursor: number, since: number): Promise<Alert[]> {
   const rows = await db
     .prepare(
       `WITH daily AS (
@@ -442,6 +460,13 @@ async function policyChanges(db: D1Database, cursor: number, since: number): Pro
       key: `pol:${r.domain}:${r.day}:${r.rank}:${r.pct}`,
       weight: r.rank * 1000 + r.pct,
       cooldown: COOLDOWN.policy,
+      data: {
+        domain: r.domain,
+        observed_on: r.day,
+        from: { p: RANK_NAME[r.prev_rank], pct: r.prev_pct },
+        to: { p: RANK_NAME[r.rank], pct: r.pct },
+        direction: stricter ? "stricter" : "relaxed",
+      },
       line: `• *${safe(r.domain)}*  \`${from}\` → \`${to}\`  ${stricter ? "(stricter)" : "(relaxed)"}, seen ${r.day}`,
     };
   });
@@ -463,6 +488,11 @@ function groupMessage(alerts: Alert[], baseUrl: string | null, preview = false):
   return { text: `dmarc-compass: ${alerts.length} alert${alerts.length === 1 ? "" : "s"}`, blocks };
 }
 
+function alertsContent(alerts: Alert[], baseUrl: string | null, now: number): Content {
+  return { slack: groupMessage(alerts, baseUrl), event: "alerts", json: alertsPayload(alerts, baseUrl, now) };
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 const signed = (n: number, digits = 0) => `${n >= 0 ? "+" : "-"}${Math.abs(n).toFixed(digits)}`;
 
 interface PeriodTotals {
@@ -515,30 +545,57 @@ const shortDate = (epoch: number) =>
 /** The digest covers the last N complete UTC days. Receivers date each report
  * at 00:00 UTC of the day it covers and send it hours later, so a rolling
  * "last 24 hours" window would miss almost everything. */
-async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | null, now: number): Promise<SlackMessage> {
+interface DigestData {
+  label: string;
+  days: number;
+  start: number;
+  end: number;
+  cur: PeriodTotals;
+  prev: PeriodTotals;
+  summary: { domains: number; enforced: number; ready: number; attention: number; idle: number };
+  statusDays: number;
+  attention: Array<{ domain: string; policy: string | null; total: number; failing: number; rate: number }>;
+  policies: Alert[];
+  senders: Alert[];
+}
+
+async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: number): Promise<DigestData> {
   const days = digestPeriodDays(cfg.digest);
   const end = now - (now % DAY);
   const start = end - days * DAY;
+  const statusDays = Math.max(30, days + 1);
   const list = { q: "", sort: "risk", dir: "desc" as const, page: 1 };
   const [cur, prev, domains, senders, policies] = await Promise.all([
     periodTotals(env.DB, start, end),
     periodTotals(env.DB, start - days * DAY, start),
-    loadDomains(env.DB, { domains: [], range: Math.max(30, days + 1) }, list),
+    loadDomains(env.DB, { domains: [], range: statusDays }, list),
     newFailingSenders(env.DB, { kind: "period", since: start }, cfg.rules.newFailingSender.minMessages, now),
     policyChanges(env.DB, 0, start),
   ]);
+  return {
+    label: days === 1 ? shortDate(start) : `${shortDate(start)} to ${shortDate(end - 1)}`,
+    days,
+    start,
+    end,
+    cur,
+    prev,
+    summary: domains.summary,
+    statusDays,
+    attention: domains.rows.filter((r) => r.status === "attention").slice(0, 5),
+    policies,
+    senders,
+  };
+}
 
+function digestSlack(d: DigestData, baseUrl: string | null): SlackMessage {
+  const { cur, prev } = d;
   const rate = cur.total ? (cur.passed / cur.total) * 100 : 0;
   const prevRate = prev.total ? (prev.passed / prev.total) * 100 : null;
   const volume = prev.total ? ` (${signed(((cur.total - prev.total) / prev.total) * 100)}% vs the period before)` : "";
   const rateNote = prevRate !== null && cur.total ? ` (${signed(rate - prevRate, 1)} pts)` : "";
+  const s = d.summary;
 
-  const s = domains.summary;
-  const statusDays = Math.max(30, days + 1);
-  const attention = domains.rows.filter((r) => r.status === "attention").slice(0, 5);
-  const label = days === 1 ? shortDate(start) : `${shortDate(start)} to ${shortDate(end - 1)}`;
-
-  const blocks: SlackBlock[] = [header(`dmarc-compass digest: ${label}`)];
+  const blocks: SlackBlock[] = [header(`dmarc-compass digest: ${d.label}`)];
   blocks.push(
     ...sections([
       cur.total ? `*${num(cur.total)}* messages${volume}` : "No messages in reports for this period yet. Receivers can take a day or two to report.",
@@ -552,34 +609,60 @@ async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | 
   );
   blocks.push(
     ...sections([
-      `*Domains* (${num(s.domains)}), status over the last ${statusDays} days`,
+      `*Domains* (${num(s.domains)}), status over the last ${d.statusDays} days`,
       `${num(s.enforced)} enforced  ·  ${num(s.ready)} ready to tighten  ·  ${num(s.attention)} need attention  ·  ${num(s.idle)} idle`,
     ]),
   );
-  if (attention.length) {
+  if (d.attention.length) {
     blocks.push(
       ...sections([
         "*Most failing domains*",
-        ...attention.map((r) => `• *${safe(r.domain)}*  ${num(r.failing)} failing of ${num(r.total)} (${pct(r.rate)} pass), \`p=${r.policy ?? "?"}\``),
+        ...d.attention.map((r) => `• *${safe(r.domain)}*  ${num(r.failing)} failing of ${num(r.total)} (${pct(r.rate)} pass), \`p=${r.policy ?? "?"}\``),
       ]),
     );
   }
-  if (policies.length) {
+  if (d.policies.length) {
     blocks.push(
-      ...sections([`*Policy changes* (${policies.length})`, ...policies.slice(0, 5).map((a) => a.line), ...(policies.length > 5 ? [`_+${policies.length - 5} more_`] : [])]),
+      ...sections([`*Policy changes* (${d.policies.length})`, ...d.policies.slice(0, 5).map((a) => a.line), ...(d.policies.length > 5 ? [`_+${d.policies.length - 5} more_`] : [])]),
     );
   }
-  if (senders.length) {
+  if (d.senders.length) {
     blocks.push(
       ...sections([
-        `*New failing senders* (${senders.length})`,
-        ...senders.slice(0, 5).map((a) => a.line),
-        ...(senders.length > 5 ? [`_+${senders.length - 5} more_`] : []),
+        `*New failing senders* (${d.senders.length})`,
+        ...d.senders.slice(0, 5).map((a) => a.line),
+        ...(d.senders.length > 5 ? [`_+${d.senders.length - 5} more_`] : []),
       ]),
     );
   }
   blocks.push(...linkBlock(baseUrl, "/domains", "Open the dashboard"));
-  return { text: `dmarc-compass digest: ${label}`, blocks };
+  return { text: `dmarc-compass digest: ${d.label}`, blocks };
+}
+
+/** The digest covers the last N complete UTC days. Receivers date each report
+ * at 00:00 UTC of the day it covers and send it hours later, so a rolling
+ * "last 24 hours" window would miss almost everything. */
+async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | null, now: number): Promise<Content> {
+  const d = await collectDigest(env, cfg, now);
+  return {
+    slack: digestSlack(d, baseUrl),
+    event: "digest",
+    json: digestPayload(
+      {
+        periodStart: d.start,
+        periodEnd: d.end,
+        days: d.days,
+        current: { total: d.cur.total, passed: d.cur.passed, sources: d.cur.sources, failingSources: d.cur.failingSources, domains: d.cur.domains, reports: d.cur.reports },
+        previous: d.prev.total ? { total: d.prev.total, passed: d.prev.passed } : null,
+        domains: { total: d.summary.domains, enforced: d.summary.enforced, ready: d.summary.ready, attention: d.summary.attention, idle: d.summary.idle, statusDays: d.statusDays },
+        mostFailing: d.attention,
+        policyChanges: d.policies,
+        newFailingSenders: d.senders,
+      },
+      baseUrl,
+      now,
+    ),
+  };
 }
 
 // ----------------------------------------------------------- orchestration --
@@ -615,6 +698,7 @@ async function collectAlerts(
           key: "sync-failed",
           weight: 2,
           cooldown: COOLDOWN.syncFailed,
+          data: { problem: "sync_failed", detail: last.summary },
           line: `• The last sync failed: ${safe(last.summary, 150)}`,
         });
       } else if (staleFor > r.syncHealth.staleMinutes * 60) {
@@ -623,6 +707,7 @@ async function collectAlerts(
           key: "sync-stale",
           weight: 1,
           cooldown: COOLDOWN.syncFailed,
+          data: { problem: "sync_stale", hours_since_last_success: Math.round(staleFor / 3600) },
           line: `• No successful sync for ${Math.round(staleFor / 3600)} hours.`,
         });
       } else {
@@ -694,7 +779,7 @@ export async function runNotifications(env: NotifyEnv): Promise<NotifyOutcome> {
 
       if (fresh.length) {
         const label = `${fresh.length} alert${fresh.length === 1 ? "" : "s"} sent`;
-        const res = await deliver(env, alertTargets, "alert", groupMessage(fresh, baseUrl), label);
+        const res = await deliver(env, alertTargets, "alert", alertsContent(fresh, baseUrl, now), label);
         // Sent once at least one webhook has it; a webhook that failed is shown in the panel.
         if (res.sent > 0) {
           await markSent(env.DB, fresh, now);
@@ -709,7 +794,11 @@ export async function runNotifications(env: NotifyEnv): Promise<NotifyOutcome> {
             env,
             alertTargets,
             "alert",
-            { text: "dmarc-compass: sync recovered", blocks: [header("dmarc-compass: sync recovered"), ...sections(["Syncing is working again."])] },
+            {
+              slack: { text: "dmarc-compass: sync recovered", blocks: [header("dmarc-compass: sync recovered"), ...sections(["Syncing is working again."])] },
+              event: "alerts",
+              json: alertsPayload([{ rule: "syncHealth", weight: 0, line: "Syncing is working again.", data: { problem: "sync_recovered" } }], baseUrl, now),
+            },
             "sync recovered",
           );
           if (res.sent > 0) {
@@ -752,8 +841,12 @@ export async function testWebhook(env: NotifyEnv, id: string): Promise<Done> {
     [dest],
     "test",
     {
-      text: "dmarc-compass: test message",
-      blocks: [header("dmarc-compass: test message"), ...sections([`Notifications are connected${dest.name ? ` (${safe(dest.name, 40)})` : ""}. Alerts and your digest will be delivered to this channel.`])],
+      slack: {
+        text: "dmarc-compass: test message",
+        blocks: [header("dmarc-compass: test message"), ...sections([`Notifications are connected${dest.name ? ` (${safe(dest.name, 40)})` : ""}. Alerts and your digest will be delivered to this channel.`])],
+      },
+      event: "test",
+      json: testPayload(dest.name, Math.floor(Date.now() / 1000)),
     },
     "test message sent",
   );

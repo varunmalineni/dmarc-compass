@@ -1,9 +1,9 @@
 import type { TlsData } from "./tls-data";
 import { TLS_LIMIT } from "./tls-data";
 import { rangeLabel, type Filters } from "./filters";
-import { escapeHtml, fmtDate, fmtNumber, fmtPct, emptyState, panel } from "./shared-ui";
+import { escapeHtml, fmtDate, fmtNumber, fmtPct, emptyState, panel, exportMenu } from "./shared-ui";
 
-export function renderTlsBody(d: TlsData, f: Filters): string {
+export function renderTlsBody(d: TlsData, f: Filters, url: URL): string {
   const sessions = d.success + d.failure;
   const rate = sessions > 0 ? (d.success / sessions) * 100 : 100;
   const tone = rate >= 99.9 ? "v-good" : rate >= 95 ? "v-warn" : "v-bad";
@@ -38,12 +38,13 @@ export function renderTlsBody(d: TlsData, f: Filters): string {
               `<tr><td class="muted small">${fmtDate(r.at)}</td><td>${escapeHtml(r.domain)}</td><td><span class="badge bad">${escapeHtml(r.resultType)}</span></td><td>${r.ip ? `<code>${escapeHtml(r.ip)}</code>` : "&ndash;"}</td><td>${r.mx ? escapeHtml(r.mx) : "&ndash;"}</td><td class="num">${fmtNumber(r.sessions)}</td></tr>`,
           )
           .join("")}</tbody></table></div>`,
-        { flush: true, sub: `Latest ${TLS_LIMIT}` },
+        { flush: true, sub: `Latest ${TLS_LIMIT}`, actions: exportMenu(url, [{ dataset: "tls-failures", label: "TLS failures (all)" }]) },
       )
     : "";
 
   return `${kpis}${panel("Policy results by domain", byDomain, {
     flush: d.byDomain.length > 0,
+    actions: d.byDomain.length ? exportMenu(url, [{ dataset: "tls", label: "TLS results" }, { dataset: "tls-failures", label: "TLS failures" }]) : "",
     sub: d.byDomainTotal > TLS_LIMIT ? `Top ${TLS_LIMIT} of ${fmtNumber(d.byDomainTotal)} by failures` : escapeHtml(rangeLabel(f.range)),
   })}${failures}`;
 }

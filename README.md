@@ -26,11 +26,11 @@ Point your domains' `rua=` address at one mailbox and see who is sending as you,
   <tr>
     <td width="33%" valign="top"><b>Built for many domains</b><br><sub>A searchable domain multi-select and a time range on every page, kept in the URL. Designed for fleets of hundreds or thousands of domains.</sub></td>
     <td width="33%" valign="top"><b>Enforcement readiness</b><br><sub>Which sources fail alignment in the last 30 days, and how many messages a tighter policy would have quarantined or rejected.</sub></td>
-    <td width="33%" valign="top"><b>Sender identification</b><br><sub>Raw IPs become "Amazon SES" or "Google Workspace", with trends over time and every source plotted on a map.</sub></td>
+    <td width="33%" valign="top"><b>Sender identification</b><br><sub>Raw IPs become "Amazon SES" or "Google Workspace", with trends over time, every source plotted on a map, and TLS-RPT reports alongside.</sub></td>
   </tr>
   <tr>
-    <td valign="top"><b>Alerts and a digest</b><br><sub>Slack-compatible alerts for new failing senders, pass-rate drops, policy changes and sync problems, plus a digest on a schedule you choose.</sub></td>
-    <td valign="top"><b>TLS-RPT included</b><br><sub>MTA-STS and DANE reports sit next to your DMARC data.</sub></td>
+    <td valign="top"><b>Alerts and webhooks</b><br><sub>Alerts for new failing senders, pass-rate drops, policy changes and sync problems, plus a scheduled digest, to Slack or any URL as signed JSON.</sub></td>
+    <td valign="top"><b>Exports and reports</b><br><sub>CSV or JSON from every table, matching your filters, and a printable one-document summary report you can save as PDF.</sub></td>
     <td valign="top"><b>No server to run</b><br><sub>Workers, D1 and one container, configured from a login-protected <code>/admin</code> page. <code>git clone</code>, <code>npm install</code>, <code>npm run setup</code>.</sub></td>
   </tr>
 </table>
@@ -57,7 +57,11 @@ Point your domains' `rua=` address at one mailbox and see who is sending as you,
   </tr>
   <tr>
     <td><a href="docs/images/overview-light.png"><img src="docs/images/overview-light.png" alt="Overview in the light theme"></a><br><sub><b>Light theme.</b> Dark is the default; switch from the sidebar.</sub></td>
-    <td><a href="docs/images/admin.png"><img src="docs/images/admin.png" alt="Admin page"></a><br><sub><b>Admin.</b> Setup checklist, visibility switch and mailbox settings.</sub></td>
+    <td><a href="docs/images/admin-webhooks.png"><img src="docs/images/admin-webhooks.png" alt="Admin: webhooks, alert rules and digest"></a><br><sub><b>Webhooks.</b> Slack or signed JSON, with per-webhook routing, test and remove.</sub></td>
+  </tr>
+  <tr>
+    <td><a href="docs/images/summary-report.png"><img src="docs/images/summary-report.png" alt="Printable summary report"></a><br><sub><b>Summary report.</b> A one-document summary to print to PDF or download as HTML.</sub></td>
+    <td><a href="docs/images/export-menu.png"><img src="docs/images/export-menu.png" alt="Export menu on the Domains table"></a><br><sub><b>Export.</b> CSV or JSON from every table, matching your filters.</sub></td>
   </tr>
 </table>
 
@@ -141,19 +145,38 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 | **DMARC reports** | Every report, filterable by DKIM or SPF problems, with per-record detail and the original XML and JSON (view or download). |
 | **TLS reports** | SMTP TLS (MTA-STS and DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
+| **Summary report** | A printable one-document summary for the current filters: key findings, trend, domain status, failing senders, policy changes, TLS. Print it to PDF or download it as HTML. |
 | **Admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Always requires login. |
 
 **Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
 
+## Exports and reports
+
+**Export.** Every table has an **Export** menu with CSV and JSON downloads that match what is on screen: the same domain filter, time range and search.
+
+| Dataset | One row per |
+|---|---|
+| Domains | domain: policy, status, messages, failing, pass rate, last report |
+| Sending sources | source IP: sender, reverse DNS, messages, failing, issues |
+| DMARC reports | report: reporter, period, policy, messages, failing |
+| Every record | source per report: the raw authentication results |
+| TLS results / TLS failures | TLS policy result / failure detail |
+
+CSV files open correctly in Excel and Sheets (UTF-8 with a byte order mark). Text that a spreadsheet could interpret as a formula, such as a sender name starting with `=` or `@`, is prefixed with an apostrophe so it stays text; report data comes from third parties, so this matters. Each export is capped at 100,000 rows; if a file hits the cap the `X-Export-Truncated` header (and a `truncated` field in JSON) says so, and a shorter time range or domain filter gets the rest.
+
+**Summary report.** Open **Summary report** in the sidebar for a clean, light, one-document summary of the current filters. Use **Print / Save as PDF** in your browser, or **Download HTML** for a self-contained file you can email or archive (no scripts, no external requests).
+
+Exports and the summary report **always require the admin login**, even when the dashboard is public, because a bulk export of every source IP is more than page-by-page browsing is meant to hand out. The original report XML and JSON follow the same rule.
+
 ## Notifications
 
-Alerts and a periodic digest go to one or more Slack-compatible **incoming webhooks** (Slack, Mattermost, and others that accept the same format). Nothing is sent until you add one.
+Alerts and a periodic digest go to one or more **webhooks**: Slack-compatible incoming webhooks (Slack, Mattermost, and others that accept the same format), or **JSON webhooks** that POST a structured document to any URL (your own service, n8n, Zapier, a SIEM). Nothing is sent until you add one.
 
 1. In Slack, create an *Incoming Webhook* for the channel you want and copy its URL.
 2. Open **Admin → Notifications**, give it an optional **nickname** (for example `#dmarc-alerts`), paste the URL, and press **Add webhook**.
 3. Press **Test** on its row to confirm a message arrives.
 
-Each webhook is a row showing its nickname, a masked form of its URL, whether it receives **Alerts** and/or the **Digest** (so security alerts and a management digest can go to different channels), and how its last delivery went. Rename it, change what it receives, **Test** it or **Remove** it right from the row. You can add up to 10. A webhook supplied as a `SLACK_WEBHOOK_URL` Worker secret appears as a read-only row.
+Choose the **type** when you add a webhook. Each webhook is a row showing its nickname, its type, a masked form of its URL, whether it receives **Alerts** and/or the **Digest** (so security alerts and a management digest can go to different channels), and how its last delivery went. Rename it, change what it receives, **Test** it or **Remove** it right from the row. You can add up to 10. A webhook supplied as a `SLACK_WEBHOOK_URL` Worker secret appears as a read-only row.
 
 **Alert rules.** Checked after every sync. Each event is reported once, and several alerts from one sync arrive as one message.
 
@@ -169,6 +192,41 @@ Each webhook is a row showing its nickname, a masked form of its URL, whether it
 **Preview alerts** shows what the rules would have reported over the last 7 days without sending anything, and **Send digest now** sends one immediately.
 
 If every webhook that should receive an alert is unreachable, nothing is lost: an alert is only marked as sent once at least one webhook accepts it, so it is retried on the next run. If one of several is down, the others still deliver, and the failure is shown on that row. A notification problem never fails a sync.
+
+### JSON webhooks
+
+A JSON webhook receives `POST` requests with `Content-Type: application/json`. Every document has `schema` (for example `dmarc-compass.alerts.v1`; the suffix changes only on a breaking change), `event` (`alerts`, `digest` or `test`), `source` and `sent_at` (ISO 8601, UTC), and `links` back to the dashboard once you have opened Admin.
+
+```json
+{
+  "schema": "dmarc-compass.alerts.v1",
+  "event": "alerts",
+  "count": 2,
+  "alerts": [
+    { "rule": "new_failing_sender", "message": "example.com Amazon SES 192.0.2.1 75 failing of 75 messages",
+      "domain": "example.com", "source_ip": "192.0.2.1", "sender": "Amazon SES", "failing_messages": 75, "total_messages": 75 },
+    { "rule": "pass_rate_drop", "domain": "example.com", "previous_pass_rate_pct": 99.1, "current_pass_rate_pct": 84.3, "drop_points": 14.8 }
+  ]
+}
+```
+
+Alert rules are `new_failing_sender`, `pass_rate_drop`, `policy_change` and `sync_problem`. The digest document has `period`, `totals` (messages, pass rate, previous pass rate, sources), `domains` (counts by status and the most failing), `policy_changes` and `new_failing_senders`.
+
+**Signing.** If you set a signing secret, each request carries `X-Dmarc-Compass-Timestamp` and `X-Dmarc-Compass-Signature: sha256=<hex>`, where the signature is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`. Verify it, and reject old timestamps so a captured request cannot be replayed:
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(rawBody, headers, secret, toleranceSeconds = 300) {
+  const ts = headers["x-dmarc-compass-timestamp"];
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > toleranceSeconds) return false;
+  const expected = "sha256=" + createHmac("sha256", secret).update(`${ts}.${rawBody}`).digest("hex");
+  const given = headers["x-dmarc-compass-signature"] ?? "";
+  return given.length === expected.length && timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+}
+```
+
+Respond with any `2xx` status. A non-`2xx` response or a timeout (8 seconds) is treated as a failed delivery.
 
 ## Try it without a mailbox
 
@@ -240,6 +298,8 @@ npm test            # unit tests (schedule math, settings, message escaping)
 - The container is only reachable through the Worker. The one thing the Worker fetches from it on request is the original report XML/JSON, and that always requires the admin login, even when the dashboard is public. Files are served as plain text with a restrictive `Content-Security-Policy`.
 - Webhook URLs are credentials: they are stored encrypted (as one list) like the mailbox password, never shown back in the browser, and never written to logs or error messages. Only a masked form is displayed.
 - Alert text includes domain and reporter names taken from third-party reports, so everything sent to Slack is escaped. A crafted report cannot inject links or mentions (such as `@channel`).
+- Exports, the summary report and the original report files always require the admin login, and CSV cells that could run as spreadsheet formulas are neutralised.
+- JSON webhook signing secrets are stored encrypted with the webhook list and are never shown again.
 - The public-dashboard switch defaults to **off**.
 
 Found a vulnerability? Please report it privately through GitHub's *Security → Report a vulnerability* rather than a public issue.
@@ -251,6 +311,7 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 - **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.
+- **Exports are capped at 100,000 rows** each (narrow the time range or domains for more).
 - **Alerts cover DMARC and sync health, not TLS failures yet**, and are delivered only to Slack-compatible webhooks (no direct email).
 
 ## Roadmap

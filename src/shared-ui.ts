@@ -179,12 +179,34 @@ export function searchForm(o: {
 
 // ---------- shell ----------
 
+/** The "Export" menu for a table. The links carry the page's current domain
+ * filter, time range and search, so the file matches what is on screen. */
+export function exportMenu(url: URL, items: Array<{ dataset: string; label: string }>): string {
+  const keep = new URLSearchParams();
+  for (const k of ["domains", "domain", "range", "q", "filter"]) {
+    const v = url.searchParams.get(k);
+    if (v) keep.set(k, v);
+  }
+  const href = (dataset: string, format: string) => {
+    const p = new URLSearchParams(keep);
+    p.set("format", format);
+    return `/export/${dataset}?${p.toString()}`;
+  };
+  const rows = items
+    .map(
+      (i) =>
+        `<div class="menu-item"><span>${escapeHtml(i.label)}</span><span class="menu-links"><a href="${href(i.dataset, "csv")}" download>CSV</a><a href="${href(i.dataset, "json")}" download>JSON</a></span></div>`,
+    )
+    .join("");
+  return `<details class="menu"><summary class="btn secondary" aria-label="Export this table">${ICON.download}<span>Export</span></summary><div class="menu-list">${rows}<div class="menu-note">Asks for the admin login. Matches the filters and search shown.</div></div></details>`;
+}
+
 export interface Chrome {
   allDomains: string[];
   lastSync: LastSync | null;
 }
 
-export type NavKey = "overview" | "domains" | "reports" | "tls" | "map" | "admin";
+export type NavKey = "overview" | "domains" | "reports" | "tls" | "map" | "report" | "admin";
 
 export interface PageOpts {
   title: string;
@@ -209,6 +231,8 @@ const ICON = {
   tls: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
   map: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11a7 7 0 0 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
   admin: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>',
+  report: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6"/></svg>',
   sun: '<svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   moon: '<svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
   chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
@@ -227,6 +251,7 @@ const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
   { key: "reports", href: "/reports", label: "DMARC reports", icon: ICON.reports },
   { key: "tls", href: "/tls-reports", label: "TLS reports", icon: ICON.tls },
   { key: "map", href: "/map", label: "Sender map", icon: ICON.map },
+  { key: "report", href: "/report", label: "Summary report", icon: ICON.report },
 ];
 
 // Dark is the default (set on <html>); a saved choice overrides it before first paint, so the page never flashes the wrong theme.
@@ -255,6 +280,8 @@ const SHELL_JS = `
     d.dataset.theme=next;try{localStorage.setItem('theme',next)}catch(e){}
     if(window.Chart&&window.__mount){Object.values(Chart.instances).forEach(function(c){c.destroy()});themeCharts();window.__mount()}
   });
+  document.addEventListener('click',function(e){document.querySelectorAll('details.menu[open]').forEach(function(d){if(!d.contains(e.target))d.removeAttribute('open')})});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('details.menu[open]').forEach(function(d){d.removeAttribute('open')})});
 })();`;
 
 const DOMAIN_FILTER_JS = `

@@ -15,6 +15,7 @@ import {
   pagination,
   sortTh,
   searchForm,
+  exportMenu,
   urlWith,
   safeJson,
 } from "./shared-ui";
@@ -186,7 +187,8 @@ export function renderOverviewBody(
 
   const sourcesPanel = `<section class="panel" id="${sourcesAnchor}">
     <div class="panel-head"><div><h2 class="panel-title">Sending sources</h2><div class="panel-sub">${range} &middot; failing senders first</div></div>
-      ${searchForm({ action: "/", filters: f, list, placeholder: "Search IP, sender or hostname", anchor: sourcesAnchor })}
+      <div class="head-tools">${searchForm({ action: "/", filters: f, list, placeholder: "Search IP, sender or hostname", anchor: sourcesAnchor })}
+      ${exportMenu(url, [{ dataset: "sources", label: "Sending sources" }])}</div>
     </div>
     <div class="panel-body flush">${sourcesTable}</div>
     ${pagination({ page: list.page, pageSize: SOURCES_PAGE_SIZE, total: data.sources.total, noun: "sources", href: (p) => urlWith(url, { page: String(p) }) + `#${sourcesAnchor}` })}

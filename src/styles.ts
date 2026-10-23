@@ -199,6 +199,20 @@ main { width: 100%; max-width: 1380px; margin: 0 auto; padding: 24px 32px 56px; 
 .link-btn { background: none; border: none; color: var(--accent); font-weight: 600; font-size: 12.5px; cursor: pointer; font-family: inherit; padding: 4px; }
 
 /* ---------- tables ---------- */
+.head-tools { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+.head-tools .search { min-width: 170px; flex: 0 1 300px; }
+details.menu > summary { white-space: nowrap; }
+details.menu { position: relative; }
+details.menu > summary { list-style: none; padding: 7px 12px; font-size: 13px; }
+details.menu > summary::-webkit-details-marker { display: none; }
+details.menu > summary svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 280px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,.35)); padding: 6px; }
+.menu-item { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 8px 10px; border-radius: 7px; font-size: 13px; }
+.menu-item:hover { background: var(--surface-2); }
+.menu-links { display: flex; gap: 6px; }
+.menu-links a { font-weight: 650; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--accent-text); text-decoration: none; }
+.menu-links a:hover { background: var(--accent-soft); }
+.menu-note { padding: 8px 10px 4px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); margin-top: 4px; }
 .table-wrap { overflow-x: auto; }
 .table-wrap.scroll { max-height: 560px; overflow: auto; }
 table.data { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13.5px; }

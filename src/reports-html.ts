@@ -11,6 +11,7 @@ import {
   pagination,
   sortTh,
   searchForm,
+  exportMenu,
   urlWith,
 } from "./shared-ui";
 
@@ -65,7 +66,8 @@ export function renderReportsBody(
 
   return `<section class="panel">
     <div class="panel-head"><div><h2 class="panel-title">DMARC aggregate reports</h2><div class="panel-sub">${escapeHtml(rangeLabel(f.range))}</div></div>
-      ${searchForm({ action: "/reports", filters: f, list, placeholder: "Search report ID or organization", extra: { filter: filter === "all" ? undefined : filter } })}
+      <div class="head-tools">${searchForm({ action: "/reports", filters: f, list, placeholder: "Search report ID or organization", extra: { filter: filter === "all" ? undefined : filter } })}
+      ${exportMenu(url, [{ dataset: "reports", label: "DMARC reports" }, { dataset: "records", label: "Every record" }])}</div>
     </div>
     <div class="toolbar">${chips}</div>
     <div class="panel-body flush">${table}</div>
