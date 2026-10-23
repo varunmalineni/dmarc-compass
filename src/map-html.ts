@@ -51,7 +51,7 @@ export function renderMapBody(
     points.map((p) => ({ lat: p.lat, lon: p.lon, ip: p.ip, esp: p.esp, city: p.city, country: p.country, total: p.total, rate: p.total ? (p.passed / p.total) * 100 : 0 })),
   )};
   var map=L.map('map',{scrollWheelZoom:false}).setView([20,0],2);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:18}).addTo(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:18,referrerPolicy:'origin'}).addTo(map);
   var group=[];
   function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   P.forEach(function(p){
