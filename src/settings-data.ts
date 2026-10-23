@@ -1,4 +1,4 @@
-import { encryptValue, decryptValue } from "./crypto-util";
+import { encryptValue, decryptValue } from "./crypto-util.ts";
 
 export const CONFIG_KEYS = ["IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD", "IMAP_FOLDER"] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];

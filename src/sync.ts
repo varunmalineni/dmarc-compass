@@ -1,7 +1,7 @@
 import type { DmarcReportJson, ReportHeader } from "./dmarc-types";
 import type { TlsReportHeader, TlsReportJson } from "./tls-types";
-import { espNameFromPtr } from "./esp";
-import { getAdminCreds, type AdminEnv } from "./config";
+import { espNameFromPtr } from "./esp.ts";
+import { getAdminCreds, type AdminEnv } from "./config.ts";
 
 export interface SyncEnv extends AdminEnv {
   DB: D1Database;
@@ -42,6 +42,7 @@ function summarizeAuthResult(results: Array<{ result: string }> | null | undefin
 async function syncDmarcReports(
   container: { fetch(req: Request): Promise<Response> },
   env: SyncEnv,
+  mailboxId: string,
 ): Promise<{ newReports: number; newRecords: number; newIps: Set<string> }> {
   const listRes = await callContainer(container, "/dmarc-reports", env);
   if (!listRes.ok) {
@@ -73,8 +74,8 @@ async function syncDmarcReports(
 
     const inserted = await env.DB.prepare(
       `INSERT OR IGNORE INTO dmarc_reports
-         (hash, report_id, org_name, domain, date_begin, date_end, policy_p, policy_pct, inserted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (hash, report_id, org_name, domain, date_begin, date_end, policy_p, policy_pct, inserted_at, mailbox_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         header.hash,
@@ -86,6 +87,7 @@ async function syncDmarcReports(
         report.policy_published.p,
         report.policy_published.pct ?? null,
         Math.floor(Date.now() / 1000),
+        mailboxId,
       )
       .run();
     // Ignored by the unique identity index: it's a copy we already hold.
@@ -122,6 +124,7 @@ async function syncDmarcReports(
 async function syncTlsReports(
   container: { fetch(req: Request): Promise<Response> },
   env: SyncEnv,
+  mailboxId: string,
 ): Promise<{ newTlsReports: number; newIps: Set<string> }> {
   const listRes = await callContainer(container, "/tls-reports", env);
   if (!listRes.ok) {
@@ -150,10 +153,10 @@ async function syncTlsReports(
     const dateEnd = Math.floor(new Date(report.date_range.end_datetime).getTime() / 1000);
 
     const insertedTls = await env.DB.prepare(
-      `INSERT OR IGNORE INTO tls_reports (hash, report_id, org_name, date_begin, date_end, inserted_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO tls_reports (hash, report_id, org_name, date_begin, date_end, inserted_at, mailbox_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(header.hash, report.report_id, report.organization_name, dateBegin, dateEnd, Math.floor(Date.now() / 1000))
+      .bind(header.hash, report.report_id, report.organization_name, dateBegin, dateEnd, Math.floor(Date.now() / 1000), mailboxId)
       .run();
     if (!insertedTls.meta.changes) continue;
 
@@ -242,9 +245,10 @@ async function resolveLocations(
 export async function syncReports(
   container: { fetch(req: Request): Promise<Response> },
   env: SyncEnv,
+  mailboxId: string,
 ): Promise<SyncResult> {
-  const dmarcResult = await syncDmarcReports(container, env);
-  const tlsResult = await syncTlsReports(container, env);
+  const dmarcResult = await syncDmarcReports(container, env, mailboxId);
+  const tlsResult = await syncTlsReports(container, env, mailboxId);
   const allNewIps = new Set([...dmarcResult.newIps, ...tlsResult.newIps]);
 
   // Resolve PTR/ESP enrichment for any IPs we haven't cached yet.

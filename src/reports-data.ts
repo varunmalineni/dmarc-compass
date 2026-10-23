@@ -116,6 +116,7 @@ export interface ReportDetail {
   dateEnd: number;
   policy: string;
   pct: number | null;
+  mailboxId: string | null;
   records: ReportDetailRecord[];
 }
 
@@ -132,6 +133,7 @@ export async function loadReportDetail(db: D1Database, hash: string): Promise<Re
       date_end: number;
       policy_p: string;
       policy_pct: number | null;
+      mailbox_id: string | null;
     }>();
   if (!header) return null;
 
@@ -165,6 +167,7 @@ export async function loadReportDetail(db: D1Database, hash: string): Promise<Re
     dateEnd: header.date_end,
     policy: header.policy_p,
     pct: header.policy_pct,
+    mailboxId: header.mailbox_id,
     records: recs.results.map((r) => ({
       ip: r.source_ip,
       esp: r.esp_name,

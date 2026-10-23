@@ -1,16 +1,26 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { syncReports, callContainer } from "./sync";
+import {
+  acquireLock,
+  addMailboxEntry,
+  getCursor,
+  getMailboxesView,
+  loadMailbox,
+  loadMailboxes,
+  mailboxForStart,
+  recordMailboxResult,
+  releaseLock,
+  removeMailboxEntry,
+  setCursor,
+  updateMailboxEntry,
+} from "./mailbox-store";
+import { testMailbox } from "./imap-connect";
+import { runRotation, summarize } from "./rotation";
+import { containerEnv, DEFAULT_ID } from "./mailboxes";
 import { loadOverview, SOURCE_SORT_KEYS } from "./dashboard-data";
 import { renderOverviewBody } from "./dashboard-html";
 import { loadReportsList, loadReportDetail, REPORT_SORT_KEYS, REPORT_FILTERS, type ReportFilter } from "./reports-data";
 import { renderReportsBody, renderReportDetailBody } from "./reports-html";
-import {
-  getEffectiveImapConfig,
-  getOverriddenKeys,
-  setConfigOverride,
-  isImapConfigured,
-  type ConfigKey,
-} from "./settings-data";
 import { renderAdmin } from "./admin-html";
 import { buildExport, csvStream, exportFilename, DATASETS, type Dataset } from "./exports";
 import { toJsonRows, slug } from "./csv";
@@ -55,6 +65,10 @@ interface Env extends AdminEnv {
   IMAP_FOLDER?: string;
   /** Optional: Slack webhook URL as a Worker secret (it can also be saved from /admin). */
   SLACK_WEBHOOK_URL?: string;
+  /** Development only: port of a local fake IMAP server, used for localhost mailbox hosts. */
+  IMAP_TEST_PORT?: string;
+  /** Optional: how long a sync waits for the parser to finish reading one mailbox (default 240). Raise it for very large folders. */
+  READ_TIMEOUT_SECONDS?: string;
 }
 
 const HTML = { "content-type": "text/html; charset=utf-8" };
@@ -89,19 +103,16 @@ export class DmarcViewerContainer extends Container<Env> {
     }
 
     await ensureSchema(this.env.DB);
-    const imap = await getEffectiveImapConfig(this.env);
-    if (!isImapConfigured(imap)) return new Response(NOT_CONFIGURED_MAILBOX, { status: 503 });
+    // One container reads one mailbox at a time. Which one is decided by the
+    // Worker (see loadMailbox in mailbox-store.ts) and read here when it starts.
+    const mailbox = await mailboxForStart(this.env);
+    if (!mailbox) return new Response(NOT_CONFIGURED_MAILBOX, { status: 503 });
 
-    // Credentials are injected here at start time rather than baked into the
-    // image. Values saved from /admin win over the Worker secrets.
+    // Credentials are injected here at start time rather than baked into the image.
     await this.startAndWaitForPorts({
       startOptions: {
         envVars: {
-          IMAP_HOST: imap.IMAP_HOST,
-          IMAP_PORT: "993",
-          IMAP_USER: imap.IMAP_USER,
-          IMAP_PASSWORD: imap.IMAP_PASSWORD,
-          IMAP_FOLDER: imap.IMAP_FOLDER || "INBOX",
+          ...containerEnv(mailbox),
           IMAP_CHECK_INTERVAL: "900",
           LOG_LEVEL: "debug",
           HTTP_SERVER_PORT: "8080",
@@ -215,20 +226,60 @@ async function restartContainer(env: Env): Promise<void> {
   }
 }
 
-async function runSync(env: Env): Promise<Awaited<ReturnType<typeof syncReports>>> {
+const SYNC_BUDGET_MS = 11 * 60 * 1000;
+const MIN_PER_MAILBOX_MS = 90 * 1000;
+const DEFAULT_READ_TIMEOUT_SECONDS = 240;
+const readTimeoutMs = (env: Env) => 1000 * Math.min(900, Math.max(10, Number(env.READ_TIMEOUT_SECONDS) || DEFAULT_READ_TIMEOUT_SECONDS));
+
+export interface SyncOutcome {
+  newReports: number;
+  newTlsReports: number;
+  mailboxes: Array<{ id: string; name: string; ok: boolean; newReports: number; newTlsReports: number; error?: string }>;
+}
+
+class SyncBusy extends Error {
+  constructor() {
+    super("A sync is already running. Try again in a minute.");
+  }
+}
+
+/** Visits each enabled mailbox in turn with the one container, copying new
+ * reports into the database. Never runs twice at once. */
+async function runSync(env: Env): Promise<SyncOutcome> {
+  if (!(await acquireLock(env.DB, "sync", 14 * 60))) throw new SyncBusy();
   const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
   try {
-    const result = await syncReports(container, env);
-    await recordSync(
-      env.DB,
-      true,
-      `${result.newReports} new DMARC reports, ${result.newTlsReports} new TLS reports`,
+    const { list } = await loadMailboxes(env);
+    const enabled = list.filter((m) => m.enabled);
+    if (enabled.length === 0) throw new Error("No mailbox is enabled. Add one in Admin.");
+
+    const result = await runRotation(
+      enabled,
+      await getCursor(env.DB),
+      {
+        now: () => Date.now(),
+        load: (m) => loadMailbox(env, container, m, () => restartContainer(env), readTimeoutMs(env), { onlyMailbox: enabled.length === 1 && list.length === 1 }),
+        sync: (m) => syncReports(container, env, m.id),
+        record: (m, o) => recordMailboxResult(env.DB, m.id, o),
+      },
+      { budgetMs: SYNC_BUDGET_MS, minPerMailboxMs: MIN_PER_MAILBOX_MS },
     );
-    return result;
+    await setCursor(env.DB, result.nextCursor);
+
+    const sum = summarize(result.outcomes, result.partial);
+    await recordSync(env.DB, sum.ok, sum.text);
+    const out: SyncOutcome = {
+      newReports: result.outcomes.reduce((a, o) => a + o.newReports, 0),
+      newTlsReports: result.outcomes.reduce((a, o) => a + o.newTlsReports, 0),
+      mailboxes: result.outcomes,
+    };
+    if (!sum.ok && result.outcomes.every((o) => !o.ok)) throw new Error(sum.text);
+    return out;
   } catch (err) {
     await recordSync(env.DB, false, String(err instanceof Error ? err.message : err).slice(0, 200));
     throw err;
   } finally {
+    await releaseLock(env.DB);
     // Alerts and the digest; never throws, and a Slack problem never fails a sync.
     await runNotifications(env);
   }
@@ -249,46 +300,69 @@ async function handleRawReport(request: Request, env: Env, hash: string, format:
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
 
-  const row = await env.DB.prepare("SELECT org_name, report_id, domain FROM dmarc_reports WHERE hash = ?")
+  const row = await env.DB.prepare("SELECT org_name, report_id, domain, mailbox_id FROM dmarc_reports WHERE hash = ?")
     .bind(hash)
-    .first<{ org_name: string; report_id: string; domain: string }>();
+    .first<{ org_name: string; report_id: string; domain: string; mailbox_id: string | null }>();
   if (!row) return new Response("Report not found\n", { status: 404 });
 
-  const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
-  let current: string | undefined;
-  try {
-    const list = await callContainer(container, "/dmarc-reports", env);
-    if (!list.ok) return new Response(`The container could not list reports (${list.status}).\n`, { status: 502 });
-    const headers = await list.json<Array<{ hash: string; id: string; org: string; domain: string }>>();
-    current = headers.find(
-      (h) => h.org === row.org_name && h.id === row.report_id && h.domain.toLowerCase() === row.domain.toLowerCase(),
-    )?.hash;
-  } catch (err) {
-    return new Response(`The container is not reachable yet: ${err instanceof Error ? err.message : err}\n`, { status: 502 });
-  }
-  if (!current) {
+  // Reports synced before mailboxes could be listed came from the original one.
+  const { list } = await loadMailboxes(env);
+  const mailbox = list.find((m) => m.id === (row.mailbox_id ?? DEFAULT_ID));
+  if (!mailbox) {
     return new Response(
-      "The container no longer has this report, so the original file is unavailable. " +
-        "The parsed data in this dashboard is unaffected. This happens if the email was deleted or moved out of the mailbox folder.\n",
+      "The mailbox this report came from is no longer in the list, so the original file is unavailable. The parsed data in this dashboard is unaffected.\n",
       { status: 404 },
     );
   }
 
-  const upstream = await callContainer(container, `/dmarc-reports/${encodeURIComponent(current)}/${format}`, env);
-  if (!upstream.ok) return new Response(`The container returned ${upstream.status}.\n`, { status: 502 });
+  // The parser holds one mailbox at a time. If a sync is using it, ask the user to retry;
+  // otherwise take it, switch to this report's mailbox if needed, and read the file.
+  if (!(await acquireLock(env.DB, "raw", 5 * 60))) {
+    return new Response("A sync is using the mailbox reader right now. Try again in a minute.\n", { status: 503, headers: { "retry-after": "30" } });
+  }
+  try {
+    const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
+    const loaded = await loadMailbox(env, container, mailbox, () => restartContainer(env), 150_000, { onlyMailbox: list.length === 1 });
+    if (!loaded.ok) return new Response(`${loaded.error}\n`, { status: 504 });
 
-  const name = `${row.org_name}_${row.report_id}`.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
-  const download = new URL(request.url).searchParams.get("download") === "1";
-  return new Response(upstream.body, {
-    headers: {
-      // Plain text, never application/xml: a crafted report must not be rendered as markup in our origin.
-      "content-type": format === "json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
-      "content-disposition": `${download ? "attachment" : "inline"}; filename="${name}.${format}"`,
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cache-control": "private, no-store",
-    },
-  });
+    let current: string | undefined;
+    try {
+      const res = await callContainer(container, "/dmarc-reports", env);
+      if (!res.ok) return new Response(`The container could not list reports (${res.status}).\n`, { status: 502 });
+      const headers = await res.json<Array<{ hash: string; id: string; org: string; domain: string }>>();
+      current = headers.find(
+        (h) => h.org === row.org_name && h.id === row.report_id && h.domain.toLowerCase() === row.domain.toLowerCase(),
+      )?.hash;
+    } catch (err) {
+      return new Response(`The container is not reachable yet: ${err instanceof Error ? err.message : err}\n`, { status: 502 });
+    }
+    if (!current) {
+      return new Response(
+        "The mailbox no longer has this report, so the original file is unavailable. " +
+          "The parsed data in this dashboard is unaffected. This happens if the email was deleted or moved out of the mailbox folder.\n",
+        { status: 404 },
+      );
+    }
+
+    const upstream = await callContainer(container, `/dmarc-reports/${encodeURIComponent(current)}/${format}`, env);
+    if (!upstream.ok) return new Response(`The container returned ${upstream.status}.\n`, { status: 502 });
+    const body = await upstream.text();
+
+    const name = `${row.org_name}_${row.report_id}`.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
+    const download = new URL(request.url).searchParams.get("download") === "1";
+    return new Response(body, {
+      headers: {
+        // Plain text, never application/xml: a crafted report must not be rendered as markup in our origin.
+        "content-type": format === "json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+        "content-disposition": `${download ? "attachment" : "inline"}; filename="${name}.${format}"`,
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+        "cache-control": "private, no-store",
+      },
+    });
+  } finally {
+    await releaseLock(env.DB);
+  }
 }
 
 /** Table exports as CSV or JSON. Always behind the admin login: a bulk export
@@ -301,7 +375,9 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
   const f = parseFilters(url);
   const format = url.searchParams.get("format") === "json" ? "json" : "csv";
   const problem = url.searchParams.get("filter");
+  const { list: mailboxList } = await loadMailboxes(env);
   const result = await buildExport(env.DB, dataset, {
+    mailboxNames: Object.fromEntries(mailboxList.map((m) => [m.id, m.name])),
     filters: f,
     q: (url.searchParams.get("q") ?? "").trim().slice(0, 100),
     problem: problem === "dkim" || problem === "spf" || problem === "any" ? problem : "all",
@@ -374,14 +450,35 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     const body = await request.json<Record<string, unknown>>();
 
     if (body.action === "sync") {
-      const imap = await getEffectiveImapConfig(env);
-      if (!isImapConfigured(imap)) return jsonError("Configure the mailbox first.", 400);
+      if ((await loadMailboxes(env)).list.filter((m) => m.enabled).length === 0) return jsonError("Add and enable a mailbox first.", 400);
       try {
         return Response.json(await runSync(env));
       } catch (err) {
-        return jsonError(String(err instanceof Error ? err.message : err), 502);
+        return jsonError(String(err instanceof Error ? err.message : err), err instanceof SyncBusy ? 409 : 502);
       }
     }
+
+    // Mailbox changes answer with the fresh list so the page can redraw without a reload.
+    const mailboxState = async () => Response.json({ mailboxes: await getMailboxesView(env) });
+    const raw = (v: unknown) => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+    if (body.action === "mailbox_add") {
+      const res = await addMailboxEntry(env, raw(body.mailbox));
+      return res.ok ? mailboxState() : jsonError(res.error, 400);
+    }
+    if (body.action === "mailbox_update") {
+      const res = await updateMailboxEntry(env, typeof body.id === "string" ? body.id : "", raw(body.mailbox));
+      return res.ok ? mailboxState() : jsonError(res.error, 400);
+    }
+    if (body.action === "mailbox_remove") {
+      const res = await removeMailboxEntry(env, typeof body.id === "string" ? body.id : "");
+      return res.ok ? mailboxState() : jsonError(res.error, 400);
+    }
+    if (body.action === "mailbox_test") {
+      const res = await testMailbox(env, typeof body.id === "string" ? body.id : "");
+      if (!res.ok) await mailboxState(); // the failure is recorded; the page shows it
+      return res.ok ? mailboxState() : jsonError(res.error, 502);
+    }
+    if (body.action === "mailboxes_state") return mailboxState();
 
     // Webhook and notification-setting changes all answer with the fresh list,
     // so the page can redraw without a reload.
@@ -431,30 +528,13 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       return new Response("OK\n");
     }
 
-    const fieldMap: Record<string, ConfigKey> = {
-      imap_host: "IMAP_HOST",
-      imap_user: "IMAP_USER",
-      imap_folder: "IMAP_FOLDER",
-      imap_password: "IMAP_PASSWORD",
-    };
-    const changes = Object.entries(fieldMap).filter(([field]) => typeof body[field] === "string" && body[field]);
-    if (changes.length === 0) return new Response("Nothing to save\n");
-    if (!env.CONFIG_ENCRYPTION_KEY) {
-      return jsonError("CONFIG_ENCRYPTION_KEY is not set, so credentials can't be stored. See the setup status on this page.", 400);
-    }
-    for (const [field, key] of changes) {
-      await setConfigOverride(env.DB, env.CONFIG_ENCRYPTION_KEY, key, body[field] as string);
-    }
-    await restartContainer(env);
-    return new Response("OK\n");
+    return jsonError("Unknown action.", 400);
   }
 
   await rememberBaseUrl(env.DB, url.origin);
 
-  const [imap, overridden, passwordRow, schemaVersion, counts, lastSync, publicDashboard, notify] = await Promise.all([
-    getEffectiveImapConfig(env),
-    getOverriddenKeys(env.DB),
-    env.DB.prepare("SELECT updated_at FROM settings WHERE key = 'IMAP_PASSWORD'").first<{ updated_at: number }>(),
+  const [mailboxes, schemaVersion, counts, lastSync, publicDashboard, notify] = await Promise.all([
+    getMailboxesView(env),
     getSchemaVersion(env.DB),
     env.DB.prepare(
       `SELECT
@@ -470,11 +550,7 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   return new Response(
     renderAdmin({
       notify,
-      imapHost: imap.IMAP_HOST,
-      imapUser: imap.IMAP_USER,
-      imapFolder: imap.IMAP_FOLDER,
-      overridden,
-      passwordUpdatedAt: passwordRow?.updated_at ?? null,
+      mailboxes,
       publicDashboard,
       status: {
         schemaVersion,
@@ -483,7 +559,7 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
         tlsReports: counts?.tls_reports ?? 0,
         domains: counts?.domains ?? 0,
         encryptionKeyConfigured: Boolean(env.CONFIG_ENCRYPTION_KEY),
-        imapConfigured: isImapConfigured(imap),
+        imapConfigured: mailboxes.rows.some((m) => m.enabled),
         lastSync,
       },
     }, url),
@@ -568,9 +644,16 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     const reportDetailMatch = pathname.match(/^\/reports\/([^/]+)$/);
     if (reportDetailMatch) {
-      const [detail, chrome] = await Promise.all([loadReportDetail(env.DB, decodeURIComponent(reportDetailMatch[1])), loadChrome(env.DB)]);
+      const [detail, chrome, mailboxes] = await Promise.all([
+        loadReportDetail(env.DB, decodeURIComponent(reportDetailMatch[1])),
+        loadChrome(env.DB),
+        loadMailboxes(env),
+      ]);
       if (!detail) return new Response("Report not found\n", { status: 404 });
-      return page({ title: `Report from ${detail.org}`, subtitle: `${detail.domain}`, active: "reports", url, chrome, body: renderReportDetailBody(detail, f) });
+      // Only name the mailbox when there is more than one to tell apart.
+      const mailboxName = mailboxes.list.length > 1 ? (mailboxes.list.find((m) => m.id === (detail.mailboxId ?? DEFAULT_ID))?.name ?? "removed mailbox") : null;
+      const { body, scripts } = renderReportDetailBody(detail, f, mailboxName);
+      return page({ title: `Report from ${detail.org}`, subtitle: `${detail.domain}`, active: "reports", url, chrome, body, scripts });
     }
 
     if (pathname === "/tls-reports") {
@@ -591,7 +674,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 async function runScheduled(env: Env): Promise<void> {
   await ensureSchema(env.DB);
 
-  if (!getAdminCreds(env) || !isImapConfigured(await getEffectiveImapConfig(env))) {
+  if (!getAdminCreds(env) || (await loadMailboxes(env)).list.filter((m) => m.enabled).length === 0) {
     console.log("sync skipped: admin login or mailbox not configured yet");
     await runNotifications(env);
     return;
@@ -599,7 +682,7 @@ async function runScheduled(env: Env): Promise<void> {
   try {
     console.log("sync result:", JSON.stringify(await runSync(env)));
   } catch (err) {
-    console.error("sync failed:", err);
+    if (err instanceof SyncBusy) console.log("sync skipped: one is already running");
+    else console.error("sync failed:", err);
   }
 }
-

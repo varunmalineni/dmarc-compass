@@ -75,7 +75,7 @@ export function renderReportsBody(
   </section>`;
 }
 
-export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
+export function renderReportDetailBody(d: ReportDetail, f: Filters, mailboxName: string | null = null): { body: string; scripts: string } {
   const rawBase = `/reports/${encodeURIComponent(d.hash)}`;
   const records = d.records
     .map(
@@ -94,7 +94,7 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
     )
     .join("");
 
-  return `<a class="back" href="${withFilters("/reports", f)}">&larr; All reports</a>
+  const body = `<a class="back" href="${withFilters("/reports", f)}">&larr; All reports</a>
   ${panel(
     "Report",
     `<table class="kv">
@@ -102,16 +102,18 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
       <tr><td>Reporter</td><td>${escapeHtml(d.org)}</td></tr>
       <tr><td>Domain</td><td>${escapeHtml(d.domain)}</td></tr>
       <tr><td>Period</td><td>${fmtDate(d.dateBegin)} &ndash; ${fmtDate(d.dateEnd)}</td></tr>
+      ${mailboxName ? `<tr><td>Mailbox</td><td>${escapeHtml(mailboxName)}</td></tr>` : ""}
       <tr><td>Published policy</td><td><code>p=${escapeHtml(d.policy)}</code>${d.pct !== null ? ` &middot; pct=${d.pct}` : ""}</td></tr>
     </table>
     <div class="raw-links">
       <span class="muted small">Original report</span>
-      <a class="btn secondary" href="${rawBase}/xml" target="_blank" rel="noopener">View XML</a>
-      <a class="btn secondary" href="${rawBase}/json" target="_blank" rel="noopener">View JSON</a>
-      <a class="btn secondary" href="${rawBase}/xml?download=1">Download XML</a>
-      <a class="btn secondary" href="${rawBase}/json?download=1">Download JSON</a>
+      <button class="btn secondary" type="button" data-raw="xml" data-mode="view">View XML</button>
+      <button class="btn secondary" type="button" data-raw="json" data-mode="view">View JSON</button>
+      <button class="btn secondary" type="button" data-raw="xml" data-mode="download">Download XML</button>
+      <button class="btn secondary" type="button" data-raw="json" data-mode="download">Download JSON</button>
     </div>
-    <p class="hint" style="margin:10px 0 0">Raw files come from the container and always ask for the admin login.</p>`,
+    <div class="raw-status" id="raw-status" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span id="raw-status-text"></span></div>
+    <p class="hint" style="margin:10px 0 0">The original file is read from the mailbox${mailboxName ? ` <strong>${escapeHtml(mailboxName)}</strong>` : ""} through the parser, so it can take up to a minute when the parser has to switch to this mailbox. Always asks for the admin login.</p>`,
   )}
   ${panel(
     `Records (${fmtNumber(d.records.length)})`,
@@ -120,5 +122,63 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters): string {
       <th>Policy DKIM</th><th>Policy SPF</th><th>Auth DKIM</th><th>Auth SPF</th><th>Header from</th><th>Issues</th>
     </tr></thead><tbody>${records}</tbody></table></div>`,
     { flush: true },
-  )}`;
+  )}
+  <dialog id="raw-dialog" class="raw-dialog" aria-labelledby="raw-title">
+    <div class="raw-dialog-head">
+      <strong id="raw-title"></strong>
+      <span class="grow"></span>
+      <button class="btn secondary" type="button" id="raw-copy">Copy</button>
+      <button class="btn secondary" type="button" id="raw-close">Close</button>
+    </div>
+    <pre id="raw-pre" tabindex="0"></pre>
+  </dialog>`;
+
+  const scripts = `
+  (function(){
+    var base=${JSON.stringify(rawBase).replace(/</g, "\\u003c")},box=document.getElementById('raw-status'),txt=document.getElementById('raw-status-text'),
+        dlg=document.getElementById('raw-dialog'),pre=document.getElementById('raw-pre'),title=document.getElementById('raw-title'),
+        buttons=document.querySelectorAll('[data-raw]'),timer=null;
+    function note(text,cls){box.hidden=false;box.className='raw-status'+(cls?' '+cls:'');txt.textContent=text;box.querySelector('.spinner').hidden=!!cls}
+    function setBusy(b){buttons.forEach(function(x){x.disabled=b})}
+    function start(label){
+      var t0=Date.now();setBusy(true);
+      function tick(){var s=Math.round((Date.now()-t0)/1000);note('Fetching '+label+' from the mailbox... '+s+'s'+(s>8?' (the parser may be switching to this mailbox, which can take about a minute)':''))}
+      tick();timer=setInterval(tick,1000);
+    }
+    function stop(){clearInterval(timer);setBusy(false)}
+    function get(fmt){
+      return fetch(base+'/'+fmt,{credentials:'same-origin'}).then(function(r){
+        return r.text().then(function(t){
+          if(r.status===401)throw new Error('Sign in required: open the Admin page and log in, then try again.');
+          if(r.status===429)throw new Error('Too many failed logins. Try again later.');
+          if(!r.ok)throw new Error(t.trim()||('The request failed ('+r.status+').'));
+          var m=(r.headers.get('content-disposition')||'').match(/filename="([^"]+)"/);
+          return {text:t,name:m?m[1]:'report.'+fmt};
+        });
+      });
+    }
+    buttons.forEach(function(b){b.addEventListener('click',function(){
+      var fmt=b.getAttribute('data-raw'),mode=b.getAttribute('data-mode'),label=fmt.toUpperCase();
+      start(label);
+      get(fmt).then(function(f){
+        stop();
+        if(mode==='view'){
+          title.textContent=f.name;pre.textContent=f.text;
+          if(dlg.showModal)dlg.showModal();else dlg.setAttribute('open','');
+          note('Opened '+f.name+'.','done');
+        }else{
+          var blob=new Blob([f.text],{type:'text/plain;charset=utf-8'}),a=document.createElement('a');
+          a.href=URL.createObjectURL(blob);a.download=f.name;document.body.appendChild(a);a.click();a.remove();
+          setTimeout(function(){URL.revokeObjectURL(a.href)},2000);
+          note('Downloaded '+f.name+'.','done');
+        }
+      }).catch(function(err){stop();note(err.message,'error')});
+    })});
+    document.getElementById('raw-close').addEventListener('click',function(){dlg.close?dlg.close():dlg.removeAttribute('open')});
+    document.getElementById('raw-copy').addEventListener('click',function(e){
+      var b=e.target;navigator.clipboard.writeText(pre.textContent).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)},function(){b.textContent='Copy failed'});
+    });
+    dlg.addEventListener('click',function(e){if(e.target===dlg)dlg.close()});
+  })();`;
+  return { body, scripts };
 }

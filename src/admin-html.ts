@@ -1,15 +1,11 @@
 import { escapeHtml, fmtDate, fmtNumber, layout, panel, relTime, safeJson } from "./shared-ui";
 import type { NotifyView } from "./notify";
-import type { ConfigKey } from "./settings-data";
+import type { MailboxesView } from "./mailbox-store";
 import type { LastSync } from "./app-settings";
 
 export interface AdminViewModel {
   notify: NotifyView;
-  imapHost: string;
-  imapUser: string;
-  imapFolder: string;
-  overridden: Set<ConfigKey>;
-  passwordUpdatedAt: number | null;
+  mailboxes: MailboxesView;
   publicDashboard: boolean;
   status: {
     schemaVersion: number;
@@ -85,9 +81,6 @@ function check(ok: boolean, label: string, detail: string): string {
 
 export function renderAdmin(vm: AdminViewModel, url: URL): string {
   const s = vm.status;
-  const locked = s.encryptionKeyConfigured ? "" : "disabled";
-  const source = (key: ConfigKey) =>
-    vm.overridden.has(key) ? '<span class="pill saved">saved here</span>' : '<span class="pill secret">from Worker secret</span>';
 
   const lastSync = s.lastSync
     ? `${s.lastSync.ok ? "Succeeded" : "Failed"} ${relTime(s.lastSync.at)} &middot; ${escapeHtml(s.lastSync.summary)}`
@@ -133,21 +126,37 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     <div class="msg" id="vis-msg" role="status"></div>`,
   );
 
+  const mb = vm.mailboxes;
+  const locked = mb.canSave ? "" : "disabled";
   const imap = panel(
-    "Mailbox (IMAP)",
-    `<p class="hint" style="margin-top:0">The mailbox that receives your DMARC <code>rua=</code> reports. Leave a field blank to keep its current value. Saving restarts the container, so changes apply within about a minute.</p>
-    ${s.encryptionKeyConfigured ? "" : '<div class="warn-box">Saving is disabled until the <code>CONFIG_ENCRYPTION_KEY</code> secret is set (see Setup status).</div>'}
-    <form id="imap-form">
-      <div class="field"><label for="f-host">IMAP host ${source("IMAP_HOST")}</label><input class="input" id="f-host" type="text" name="imap_host" value="${escapeHtml(vm.imapHost)}" placeholder="imap.example.com" ${locked}></div>
-      <div class="field"><label for="f-user">IMAP user ${source("IMAP_USER")}</label><input class="input" id="f-user" type="text" name="imap_user" value="${escapeHtml(vm.imapUser)}" placeholder="dmarc@example.com" ${locked}></div>
-      <div class="field"><label for="f-folder">Folder ${source("IMAP_FOLDER")}</label><input class="input" id="f-folder" type="text" name="imap_folder" value="${escapeHtml(vm.imapFolder)}" placeholder="INBOX" ${locked}><div class="hint">Folder names are case-sensitive.</div></div>
-      <div class="field"><label for="f-pass">Password ${source("IMAP_PASSWORD")}</label><input class="input" id="f-pass" type="password" name="imap_password" placeholder="Leave blank to keep current value" autocomplete="new-password" ${locked}>
-        <div class="hint">${vm.passwordUpdatedAt ? `Last changed here on ${fmtDate(vm.passwordUpdatedAt)}. ` : ""}Never shown back in the browser. Use an app-specific password where your provider offers one.</div></div>
-      <button class="btn" id="save-btn" type="submit" ${locked}>Save and restart container</button>
-      <div class="msg" id="save-msg" role="status"></div>
-    </form>`,
+    "Mailboxes",
+    `<p class="hint" style="margin-top:0">The mailboxes that receive your DMARC and TLS-RPT reports (the <code>rua=</code> and <code>_smtp._tls</code> addresses). Reports from every mailbox are combined: one view, sorted by domain, with a reported-once guarantee if the same report reaches two of them.
+    One parser reads them in turns, so each mailbox is refreshed every 15 minutes divided across the list, and original XML/JSON for a report from a mailbox that is not loaded takes a minute to fetch.</p>
+    ${mb.canSave ? "" : '<div class="warn-box">Saving is disabled until the <code>CONFIG_ENCRYPTION_KEY</code> secret is set (see Setup status).</div>'}
+    <div class="hooks" id="mailboxes"></div>
+    <div class="hint" id="mailboxes-empty" hidden>No mailbox yet. Add the one that receives your reports below.</div>
+    <form class="hook-add" id="mb-form" autocomplete="off">
+      <div class="hook-add-title" id="mb-title">Add a mailbox</div>
+      <div class="row">
+        <label for="mb-name" class="sr-only">Nickname</label>
+        <input class="input" id="mb-name" type="text" maxlength="40" placeholder="Nickname (optional)" style="width:200px" ${locked}>
+        <label for="mb-host" class="sr-only">IMAP host</label>
+        <input class="input" id="mb-host" type="text" placeholder="imap.example.com" style="width:240px" ${locked}>
+        <label for="mb-folder" class="sr-only">Folder</label>
+        <input class="input" id="mb-folder" type="text" placeholder="Folder (blank = INBOX)" style="width:200px" ${locked}>
+      </div>
+      <div class="row">
+        <label for="mb-user" class="sr-only">User</label>
+        <input class="input" id="mb-user" type="text" placeholder="dmarc@example.com" style="width:260px" autocomplete="off" ${locked}>
+        <label for="mb-pass" class="sr-only">Password</label>
+        <input class="input" id="mb-pass" type="password" placeholder="Password or app password" style="width:260px" autocomplete="new-password" ${locked}>
+        <button class="btn" id="mb-save" type="submit" ${locked}>Add mailbox</button>
+        <button class="btn secondary" id="mb-cancel" type="button" hidden>Cancel</button>
+      </div>
+      <div class="hint">Folder names are case-sensitive. Use an app-specific password where your provider offers one. Passwords are stored encrypted and never shown again. Up to ${mb.limit} mailboxes.</div>
+    </form>
+    <div class="msg" id="mb-msg" role="status"></div>`,
   );
-
 
   const n = vm.notify;
   const notifications = panel(
@@ -243,13 +252,6 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   // protects these endpoints from CSRF alongside Basic Auth.
   function post(body){return fetch('/admin',{method:'POST',headers:{'content-type':'application/json','x-settings-request':'1'},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){if(!r.ok)throw new Error(t);return t})})}
   function say(el,ok,t){el.className='msg '+(ok?'ok':'err');el.textContent=t}
-  document.getElementById('imap-form').addEventListener('submit',function(e){
-    e.preventDefault();var b=document.getElementById('save-btn'),m=document.getElementById('save-msg'),f=new FormData(e.target);
-    b.disabled=true;m.className='msg';m.textContent='Saving...';
-    post({imap_host:f.get('imap_host')||'',imap_user:f.get('imap_user')||'',imap_folder:f.get('imap_folder')||'',imap_password:f.get('imap_password')||''})
-      .then(function(){say(m,true,'Saved. The container is restarting; give it about a minute, then run a sync.')})
-      .catch(function(err){say(m,false,'Failed to save: '+err.message)}).finally(function(){b.disabled=false});
-  });
   document.getElementById('public-toggle').addEventListener('change',function(e){
     var t=e.target,m=document.getElementById('vis-msg');t.disabled=true;m.className='msg';m.textContent='Saving...';
     post({public_dashboard:t.checked})
@@ -258,10 +260,74 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   });
   document.getElementById('sync-btn').addEventListener('click',function(e){
     var b=e.target,m=document.getElementById('sync-msg');b.disabled=true;m.className='msg';
-    m.textContent='Syncing. The first run can take a minute while the container starts...';
-    post({action:'sync'}).then(function(t){var o=JSON.parse(t);say(m,true,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports. Reload to refresh the status above.')})
+    m.textContent='Syncing. With several mailboxes this can take a few minutes: the parser reads them one at a time...';
+    post({action:'sync'}).then(function(t){var o=JSON.parse(t);var bad=(o.mailboxes||[]).filter(function(x){return !x.ok});say(m,!bad.length,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports'+(bad.length?'. Problems: '+bad.map(function(x){return x.name+' ('+x.error+')'}).join('; '):'')+'. Reload to refresh the status above.')})
       .catch(function(err){say(m,false,'Sync failed: '+err.message)}).finally(function(){b.disabled=false});
   });
+  var MB=${safeJson({ rows: mb.rows, canSave: mb.canSave })};
+  (function(){
+    var $=function(id){return document.getElementById(id)};
+    var box=$('mailboxes'),msg=$('mb-msg'),editing=null;
+    function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+    function rel(at){var s=Math.max(0,Date.now()/1000-at);if(s<90)return 'just now';if(s<3600)return Math.round(s/60)+' min ago';if(s<172800)return Math.round(s/3600)+' hours ago';return Math.round(s/86400)+' days ago'}
+    function render(){
+      box.textContent='';$('mailboxes-empty').hidden=MB.rows.length>0;
+      MB.rows.forEach(function(m){
+        var row=el('div','hook');row.setAttribute('data-id',m.id);
+        var main=el('div','hook-main');
+        main.appendChild(el('strong','',m.name));
+        main.appendChild(el('code','hook-url',m.user+' @ '+m.host+' / '+(m.folder||'INBOX')));
+        if(!m.enabled)main.appendChild(el('span','pill secret','paused'));
+        if(m.source==='legacy')main.appendChild(el('span','pill secret','original'));
+        row.appendChild(main);
+        var act=el('div','hook-actions');
+        [['test','Test'],['edit','Edit'],['toggle',m.enabled?'Pause':'Resume']].forEach(function(a){var b=el('button','btn secondary',a[1]);b.type='button';b.setAttribute('data-act',a[0]);act.appendChild(b)});
+        var r=el('button','btn secondary danger','Remove');r.type='button';r.setAttribute('data-act','remove');act.appendChild(r);
+        row.appendChild(act);
+        var st=el('div','hook-status');
+        st.appendChild(document.createTextNode(m.reports.toLocaleString('en-US')+' DMARC report'+(m.reports===1?'':'s')+' stored. '));
+        if(m.result){var ok=el('span',m.result.ok?'v-good':'v-bad',m.result.ok?'OK':'Problem');st.appendChild(document.createTextNode('Last check: '));st.appendChild(ok);st.appendChild(document.createTextNode(' '+rel(m.result.at)+' \u00b7 '+m.result.detail))}
+        else st.appendChild(document.createTextNode('Not checked yet.'));
+        row.appendChild(st);box.appendChild(row);
+      });
+    }
+    render();
+    function busy(b){box.querySelectorAll('button').forEach(function(e){e.disabled=b});$('mb-save').disabled=b||!MB.canSave}
+    function run(label,body,done){
+      busy(true);msg.className='msg';msg.textContent=label;
+      post(body).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();done(r)})
+        .catch(function(err){say(msg,false,err.message);return post({action:'mailboxes_state'}).then(function(t){MB.rows=JSON.parse(t).mailboxes.rows;render()}).catch(function(){})})
+        .finally(function(){busy(false)});
+    }
+    function reset(){editing=null;['mb-name','mb-host','mb-folder','mb-user','mb-pass'].forEach(function(i){$(i).value=''});$('mb-title').textContent='Add a mailbox';$('mb-save').textContent='Add mailbox';$('mb-cancel').hidden=true;$('mb-pass').placeholder='Password or app password'}
+    $('mb-cancel').addEventListener('click',reset);
+    box.addEventListener('click',function(e){
+      var b=e.target.closest('button[data-act]');if(!b)return;
+      var id=b.closest('.hook').getAttribute('data-id');
+      var m=MB.rows.filter(function(x){return x.id===id})[0];var act=b.getAttribute('data-act');
+      if(act==='test'){
+        busy(true);msg.className='msg';msg.textContent='Connecting to '+m.host+'...';
+        post({action:'mailbox_test',id:id}).then(function(t){var r=JSON.parse(t);MB.rows=r.mailboxes.rows;render();say(msg,true,m.name+': login works and the folder opened.')})
+          .catch(function(err){say(msg,false,m.name+': '+err.message);return post({action:'mailboxes_state'}).then(function(t){MB.rows=JSON.parse(t).mailboxes.rows;render()}).catch(function(){})})
+          .finally(function(){busy(false)});
+      }else if(act==='edit'){
+        editing=id;$('mb-name').value=m.name;$('mb-host').value=m.host;$('mb-folder').value=m.folder;$('mb-user').value=m.user;$('mb-pass').value='';
+        $('mb-pass').placeholder='Leave blank to keep the current password';$('mb-title').textContent='Edit '+m.name;$('mb-save').textContent='Save changes';$('mb-cancel').hidden=false;
+        $('mb-form').scrollIntoView({block:'center'});
+      }else if(act==='toggle'){
+        run(m.enabled?'Pausing...':'Resuming...',{action:'mailbox_update',id:id,mailbox:{enabled:!m.enabled}},function(){say(msg,true,m.enabled?m.name+' paused: it is skipped until resumed.':m.name+' resumed.')});
+      }else if(act==='remove'){
+        if(!confirm('Remove '+m.name+'? Its reports already stored here are kept; no new ones will be read from it.'))return;
+        run('Removing...',{action:'mailbox_remove',id:id},function(){say(msg,true,'Removed '+m.name+'.');if(editing===id)reset()});
+      }
+    });
+    $('mb-form').addEventListener('submit',function(e){
+      e.preventDefault();
+      var mailbox={name:$('mb-name').value,host:$('mb-host').value,folder:$('mb-folder').value,user:$('mb-user').value,password:$('mb-pass').value};
+      if(editing){run('Saving...',{action:'mailbox_update',id:editing,mailbox:mailbox},function(){say(msg,true,'Saved. Use Test to check the login.');reset()})}
+      else run('Adding...',{action:'mailbox_add',mailbox:mailbox},function(){say(msg,true,'Mailbox added. Use Test to check the login, then Run sync now.');reset()});
+    });
+  })();
   var N=${safeJson({ config: n.config, saved: n.saved, hooks: n.hooks, nextDigestAt: n.nextDigestAt, canSave: n.canSaveWebhook })};
   (function(){
     var $=function(id){return document.getElementById(id)};

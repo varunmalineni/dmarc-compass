@@ -25,6 +25,8 @@ export interface ExportOptions {
   q: string;
   /** Reports only: restrict to reports with DKIM / SPF problems. */
   problem: "all" | "dkim" | "spf" | "any";
+  /** Mailbox id to display name, to label where each report came from. */
+  mailboxNames?: Record<string, string>;
 }
 
 export interface ExportResult {
@@ -95,7 +97,7 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
       o.problem === "dkim" ? " HAVING flagged_dkim = 1" : o.problem === "spf" ? " HAVING flagged_spf = 1" : o.problem === "any" ? " HAVING (flagged_dkim = 1 OR flagged_spf = 1)" : "";
     const res = await db
       .prepare(
-        `SELECT rep.report_id, rep.org_name, rep.domain, rep.date_begin, rep.date_end, rep.policy_p, rep.policy_pct,
+        `SELECT rep.report_id, rep.org_name, rep.domain, rep.date_begin, rep.date_end, rep.policy_p, rep.policy_pct, rep.mailbox_id,
                 COUNT(rec.id) AS records, COALESCE(SUM(rec.count), 0) AS messages,
                 COALESCE(SUM(CASE WHEN ${PASS("rec")} THEN 0 ELSE rec.count END), 0) AS failing,
                 MAX(${BAD("rec.policy_dkim")}) AS flagged_dkim, MAX(${BAD("rec.policy_spf")}) AS flagged_spf
@@ -106,11 +108,11 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
           LIMIT ${EXPORT_MAX_ROWS + 1}`,
       )
       .bind(since, ...dc.params, ...(q ? [q, q] : []))
-      .all<{ report_id: string; org_name: string; domain: string; date_begin: number; date_end: number; policy_p: string | null; policy_pct: number | null; records: number; messages: number; failing: number; flagged_dkim: number; flagged_spf: number }>();
+      .all<{ report_id: string; org_name: string; domain: string; date_begin: number; date_end: number; policy_p: string | null; policy_pct: number | null; mailbox_id: string | null; records: number; messages: number; failing: number; flagged_dkim: number; flagged_spf: number }>();
     const c = cap(res.results);
     return {
-      columns: ["report_id", "reporter", "domain", "period_start_utc", "period_end_utc", "policy", "pct", "records", "messages", "failing_messages", "dkim_problem", "spf_problem"],
-      rows: c.rows.map((r) => [r.report_id, r.org_name, r.domain, isoDate(r.date_begin), isoDate(r.date_end), r.policy_p, r.policy_pct, r.records, r.messages, r.failing, !!r.flagged_dkim, !!r.flagged_spf]),
+      columns: ["report_id", "reporter", "domain", "period_start_utc", "period_end_utc", "policy", "pct", "mailbox", "records", "messages", "failing_messages", "dkim_problem", "spf_problem"],
+      rows: c.rows.map((r) => [r.report_id, r.org_name, r.domain, isoDate(r.date_begin), isoDate(r.date_end), r.policy_p, r.policy_pct, o.mailboxNames?.[r.mailbox_id ?? "default"] ?? "", r.records, r.messages, r.failing, !!r.flagged_dkim, !!r.flagged_spf]),
       truncated: c.truncated,
     };
   }

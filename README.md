@@ -6,7 +6,7 @@
 
 **DMARC and TLS-RPT reporting that runs in your own Cloudflare account.**
 
-Point your domains' `rua=` address at one mailbox and see who is sending as you,<br>what is failing, and whether you are ready to move from `p=none` to `p=reject`.
+Point your domains' `rua=` addresses at one or more mailboxes and see who is sending as you,<br>what is failing, and whether you are ready to move from `p=none` to `p=reject`.
 
 [Quick start](#quick-start) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
 
@@ -146,9 +146,21 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 | **TLS reports** | SMTP TLS (MTA-STS and DANE) results and failures. |
 | **Sender map** | Where your mail is being sent from. |
 | **Summary report** | A printable one-document summary for the current filters: key findings, trend, domain status, failing senders, policy changes, TLS. Print it to PDF or download it as HTML. |
-| **Admin** | Setup status, mailbox settings, dashboard visibility, manual sync. Always requires login. |
+| **Admin** | Setup status, mailboxes, notifications, dashboard visibility, manual sync. Always requires login. |
 
 **Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
+
+## Several mailboxes
+
+If your reports arrive in more than one mailbox (different `rua=` addresses, a separate TLS-RPT address, one per business unit), add them all under **Admin → Mailboxes**. Each has a nickname, host, user, password and folder, and a **Test** button that logs in and opens the folder (it reports a wrong password, a disabled IMAP setting or a missing folder in plain words). **Pause** skips a mailbox without removing it.
+
+Everything is combined: the dashboard, exports, summary report and alerts show one view, sorted by domain, and a report that reaches two mailboxes is stored once. Each report remembers which mailbox it came from.
+
+**How it works, and what it costs.** One parser container reads the mailboxes **in turns**, so the cost stays what it is with a single mailbox. On each 15-minute run it loads a mailbox, waits for the parser to finish reading it, copies the new reports into the database, then moves to the next. If a run is short of time it stops and the next run continues from the mailbox it did not reach, so none is starved. A mailbox that fails (wrong password, server down) is recorded on its row and never stops the others.
+
+- **More mailboxes means each is refreshed less often**, because the parser has to re-read a folder after every switch. A small mailbox takes about a minute; a very large folder can take several (raise `READ_TIMEOUT_SECONDS`, default 240, if a large one times out). With one mailbox nothing is switched or re-read.
+- **Original XML/JSON** for a report from a mailbox the parser is not holding takes up to a minute to fetch, because it has to switch first. The buttons show progress while it works. The parsed data in the dashboard is always available.
+- Up to 10 mailboxes. If you need them refreshed more often than this allows, the alternative is one container per mailbox, which costs roughly $1.75 per month more for each.
 
 ## Exports and reports
 
@@ -251,7 +263,7 @@ Reload the page. `npm run demo` only ever writes to the local simulator (it alwa
 ```
  receivers (Google, Microsoft, ...)         your domains' rua= address
             │  daily XML reports                      │
-            └────────────────► one IMAP mailbox ◄─────┘
+            └────────────────► IMAP mailbox(es) ◄─────┘
                                       │
                     ┌─────────────────▼──────────────────┐
                     │  Container: dmarc-report-viewer     │   parses mail + reports
@@ -281,7 +293,7 @@ npm run deploy      # ship changes; also upgrades the database schema on first r
 npm run dev         # local development (copy .dev.vars.example to .dev.vars first)
 npm run tail        # live logs
 npm run typecheck
-npm test            # unit tests (schedule math, settings, escaping, security)
+npm test            # unit tests (schedule math, mailbox rotation, settings, escaping, security)
 npm run vendor      # refresh public/vendor after bumping Chart.js, Leaflet or Inter
 ```
 
@@ -310,8 +322,8 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 
 ## Limitations
 
-- **One container instance.** Fine for hundreds of domains' worth of reports; not horizontally scaled.
-- **Original XML/JSON comes from the container**, which re-reads your mailbox. If a report email has been deleted or moved out of the configured folder, the parsed data stays in the dashboard but the original file is no longer available.
+- **One container instance.** Fine for hundreds of domains' worth of reports; not horizontally scaled. Several mailboxes share it by taking turns (see above).
+- **Original XML/JSON comes from the parser**, which re-reads the report's mailbox. If a report email has been deleted or moved out of the configured folder, the parsed data stays in the dashboard but the original file is no longer available.
 - **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
 - **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.

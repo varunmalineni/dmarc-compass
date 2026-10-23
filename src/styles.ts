@@ -286,6 +286,16 @@ code { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-si
 .kv td { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .kv tr:last-child td { border-bottom: none; }
 .kv td:first-child { color: var(--muted); font-weight: 600; width: 190px; }
+.raw-status { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 9px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); font-size: 13px; color: var(--text-2); }
+.raw-status.done { color: var(--good); } .raw-status.error { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
+.spinner { width: 15px; height: 15px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.raw-dialog { width: min(980px, 94vw); max-height: 86vh; padding: 0; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+.raw-dialog::backdrop { background: rgba(5, 8, 20, 0.6); }
+.raw-dialog-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.raw-dialog-head .grow { flex: 1; }
+.raw-dialog-head .btn { padding: 5px 11px; font-size: 12.5px; }
+.raw-dialog pre { margin: 0; padding: 14px 16px; max-height: calc(86vh - 60px); overflow: auto; font: 12.5px/1.55 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .raw-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
 .raw-links .btn { padding: 6px 12px; font-size: 12.5px; text-decoration: none; }
 .back { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); text-decoration: none; font-weight: 600; font-size: 13px; margin-bottom: 14px; }
@@ -305,7 +315,7 @@ code { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-si
   .topbar { padding: 12px 16px; position: static; }
   main { padding: 16px 16px 40px; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } .spinner { animation-duration: 3s; } }
 @media print {
   .sidebar, .filters, .toolbar, .pager, .skip { display: none !important; }
   .shell { display: block; } .topbar { position: static; border: none; padding: 0 0 12px; }

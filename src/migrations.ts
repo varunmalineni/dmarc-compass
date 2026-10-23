@@ -165,6 +165,15 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    id: 6,
+    name: "record which mailbox each report came from",
+    statements: [
+      // NULL on reports synced before mailboxes could be listed: they came from the original single mailbox.
+      `ALTER TABLE dmarc_reports ADD COLUMN mailbox_id TEXT`,
+      `ALTER TABLE tls_reports ADD COLUMN mailbox_id TEXT`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;
