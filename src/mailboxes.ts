@@ -163,14 +163,17 @@ export function toView(m: Mailbox, source: "saved" | "legacy"): MailboxView {
 }
 
 /** A string that changes whenever the container would have to be restarted
- * to read this mailbox (any connection detail), and only then. */
-export function connectionKey(m: Mailbox): string {
-  return JSON.stringify([m.id, m.host.toLowerCase(), m.user, m.password, m.folder || "INBOX"]);
+ * to read this mailbox (any connection detail, or its re-read interval), and
+ * only then. The default interval leaves it as it was before intervals could
+ * be chosen, so upgrading does not restart anything. */
+export function connectionKey(m: Mailbox, intervalSeconds = 900): string {
+  const base: unknown[] = [m.id, m.host.toLowerCase(), m.user, m.password, m.folder || "INBOX"];
+  return JSON.stringify(intervalSeconds === 900 ? base : [...base, intervalSeconds]);
 }
 
 /** SHA-256 of the connection key: stored instead of the key itself, which contains the password. */
-export async function fingerprint(m: Mailbox): Promise<string> {
-  const bytes = new TextEncoder().encode(connectionKey(m));
+export async function fingerprint(m: Mailbox, intervalSeconds = 900): Promise<string> {
+  const bytes = new TextEncoder().encode(connectionKey(m, intervalSeconds));
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(hash.slice(0, 12), (b) => b.toString(16).padStart(2, "0")).join("");
 }

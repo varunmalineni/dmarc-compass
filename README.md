@@ -84,7 +84,7 @@ npm run setup
 
 `npm run setup` logs you into Cloudflare if needed, deploys the Worker (Wrangler creates the D1 database for you), sets the admin login, and generates the encryption key. Press Enter at the password prompt and a strong one is generated and shown once. `--dry-run` shows what it would do without changing anything.
 
-Then open `https://<your-worker>.workers.dev/admin`, sign in, enter your mailbox, and click **Run sync now**. The first sync takes about a minute while the container starts; after that it runs every 15 minutes.
+Then open `https://<your-worker>.workers.dev/admin`, sign in, enter your mailbox, and click **Run sync now**. The first sync takes about a minute while the container starts; after that it syncs every 15 minutes, or on whatever schedule you choose under **Admin → Setup status → Sync schedule**.
 
 Nothing in the repository is specific to your account. Wrangler records your resource IDs in `wrangler.local.jsonc`, which is gitignored.
 
@@ -93,7 +93,7 @@ Nothing in the repository is specific to your account. Wrangler records your res
 
 <br>
 
-Containers are not available on the free plan. Budget roughly **$6 to $7 per month**: the $5 plan fee plus about $1.75 of container memory and disk beyond the included allowance. The container runs continuously because the 15-minute sync keeps it awake. See [current Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/).
+Containers are not available on the free plan. Budget roughly **$6 to $7 per month**: the $5 plan fee plus about $1.75 of container memory and disk beyond the included allowance. With the default 15-minute sync the container stays awake continuously. A longer interval can let it sleep between syncs, but I have not measured what that saves. See [current Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/).
 
 </details>
 
@@ -150,13 +150,24 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 
 **Who can see the dashboard.** By default every page requires the admin login. In **Admin** you can switch on *Allow anyone with the link to view the dashboard*, which makes the read-only pages public. Those pages show your sending IPs, senders and pass rates, so decide whether that is acceptable first. `/admin` is never public.
 
+### Sync schedule
+
+**Admin → Setup status → Sync schedule** sets how often the mailboxes are checked: every 5, 10, 15 or 30 minutes, or every 1, 2, 4, 6, 12 or 24 hours. The default is 15 minutes. Receiving providers send aggregate reports about once a day, so a short interval mostly finds nothing new; it mainly matters if you want alerts quickly.
+
+The Worker wakes every 5 minutes (the cron in `wrangler.jsonc`) and runs a sync only when one is due, so the interval changes without a redeploy. Every wake-up also checks alerts and the digest, so they are on time whatever the interval. The **Run sync now** button is always available, and counts as a sync for the schedule.
+
+Things that follow from it:
+- The parser container re-reads the mailbox every 5 to 15 minutes while awake (matching your interval, capped at 15). Changing the interval can restart the container once, on the next sync.
+- Each sync waits for the parser to finish reading before copying reports, so a container that slept between syncs and woke up empty is handled. If a mailbox never finishes (wrong login or folder), the sync reports a timeout and the *Sync problem* alert fires, instead of quietly syncing nothing.
+- If you deployed an earlier version, its cron fired every 15 minutes. Intervals shorter than that need `"crons": ["*/5 * * * *"]` in your wrangler config and a redeploy; Admin shows a warning if the deployed schedule is slower than the interval you chose.
+
 ## Several mailboxes
 
 If your reports arrive in more than one mailbox (different `rua=` addresses, a separate TLS-RPT address, one per business unit), add them all under **Admin → Mailboxes**. Each has a nickname, host, user, password and folder, and a **Test** button that logs in and opens the folder (it reports a wrong password, a disabled IMAP setting or a missing folder in plain words). **Pause** skips a mailbox without removing it.
 
 Everything is combined: the dashboard, exports, summary report and alerts show one view, sorted by domain, and a report that reaches two mailboxes is stored once. Each report remembers which mailbox it came from.
 
-**How it works, and what it costs.** One parser container reads the mailboxes **in turns**, so the cost stays what it is with a single mailbox. On each 15-minute run it loads a mailbox, waits for the parser to finish reading it, copies the new reports into the database, then moves to the next. If a run is short of time it stops and the next run continues from the mailbox it did not reach, so none is starved. A mailbox that fails (wrong password, server down) is recorded on its row and never stops the others.
+**How it works, and what it costs.** One parser container reads the mailboxes **in turns**, so the cost stays what it is with a single mailbox. On each sync run it loads a mailbox, waits for the parser to finish reading it, copies the new reports into the database, then moves to the next. If a run is short of time it stops and the next run continues from the mailbox it did not reach, so none is starved. A mailbox that fails (wrong password, server down) is recorded on its row and never stops the others.
 
 - **More mailboxes means each is refreshed less often**, because the parser has to re-read a folder after every switch. A small mailbox takes about a minute; a very large folder can take several (raise `READ_TIMEOUT_SECONDS`, default 240, if a large one times out). With one mailbox nothing is switched or re-read.
 - **Original XML/JSON** for a report from a mailbox the parser is not holding takes up to a minute to fetch, because it has to switch first. The buttons show progress while it works. The parsed data in the dashboard is always available.
@@ -197,9 +208,9 @@ Choose the **type** when you add a webhook. Each webhook is a row showing its ni
 | **New failing sender** | A source fails DMARC for a domain it was not seen on before | at least 20 failing messages |
 | **Pass rate dropped** | A domain's pass rate over the last 7 days is lower than the 7 days before | 5 points, at least 100 messages in each week |
 | **Policy changed** | A domain's published `p=` or `pct=` changed (stricter or relaxed) | on |
-| **Sync problem** | Syncing is failing or has stopped; a note is sent when it recovers | 90 minutes without a successful sync |
+| **Sync problem** | Syncing is failing or has stopped; a note is sent when it recovers | 90 minutes without a successful sync, or three times the sync interval if that is longer |
 
-**Digest.** Off by default. Choose every day, every week, every month, or every *N* days, plus the time and time zone. It covers the last complete days of that period: messages and pass rate against the period before, domain status, the most failing domains, policy changes and new failing senders. Digests are sent within 15 minutes of the chosen time; if a run is missed it is sent once on the next run.
+**Digest.** Off by default. Choose every day, every week, every month, or every *N* days, plus the time and time zone. It covers the last complete days of that period: messages and pass rate against the period before, domain status, the most failing domains, policy changes and new failing senders. Digests are sent within 5 minutes of the chosen time; if a run is missed it is sent once on the next run.
 
 **Preview alerts** shows what the rules would have reported over the last 7 days without sending anything, and **Send digest now** sends one immediately.
 
@@ -269,7 +280,7 @@ Reload the page. `npm run demo` only ever writes to the local simulator (it alwa
                     │  Container: dmarc-report-viewer     │   parses mail + reports
                     │  (upstream project, unmodified)     │   (in memory, JSON API)
                     └─────────────────▲──────────────────┘
-                                      │ every 15 min
+                                      │ every sync interval
                     ┌─────────────────┴──────────────────┐
                     │  Worker (this repo)                 │
                     │   • sync job  → writes to D1        │

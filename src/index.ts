@@ -16,6 +16,8 @@ import {
 } from "./mailbox-store";
 import { testMailbox } from "./imap-connect";
 import { runRotation, summarize } from "./rotation";
+import { getLastAttempt, getSyncMinutes, getTickGap, markAttempt, recordTick, setSyncMinutes } from "./sync-settings";
+import { containerIntervalSeconds, nextSyncAt, PRESETS, scheduleTooSlow, syncDue } from "./sync-schedule";
 import { containerEnv, DEFAULT_ID } from "./mailboxes";
 import { loadOverview, SOURCE_SORT_KEYS } from "./dashboard-data";
 import { renderOverviewBody } from "./dashboard-html";
@@ -81,8 +83,9 @@ const NOT_CONFIGURED_MAILBOX =
 // the D1 database (see sync.ts), not the container.
 export class DmarcViewerContainer extends Container<Env> {
   defaultPort = 8080;
-  // Sleep after 30 minutes without requests. The 15-minute cron sync keeps it
-  // awake in practice; if it does sleep, the next request starts it again.
+  // Sleep after 30 minutes without requests. Syncs more often than that keep it
+  // awake; with longer intervals it sleeps between syncs, and the sync waits for
+  // it to finish reading when it wakes.
   sleepAfter = "30m";
   pingEndpoint = "localhost/health";
 
@@ -113,7 +116,7 @@ export class DmarcViewerContainer extends Container<Env> {
       startOptions: {
         envVars: {
           ...containerEnv(mailbox),
-          IMAP_CHECK_INTERVAL: "900",
+          IMAP_CHECK_INTERVAL: String(containerIntervalSeconds(await getSyncMinutes(this.env.DB))),
           LOG_LEVEL: "debug",
           HTTP_SERVER_PORT: "8080",
           HTTP_SERVER_USER: creds.user,
@@ -247,6 +250,7 @@ class SyncBusy extends Error {
  * reports into the database. Never runs twice at once. */
 async function runSync(env: Env): Promise<SyncOutcome> {
   if (!(await acquireLock(env.DB, "sync", 14 * 60))) throw new SyncBusy();
+  await markAttempt(env.DB, Math.floor(Date.now() / 1000));
   const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
   try {
     const { list } = await loadMailboxes(env);
@@ -438,6 +442,14 @@ async function handleSummary(request: Request, env: Env, url: URL): Promise<Resp
   });
 }
 
+/** What Admin needs to show about the sync schedule. */
+async function syncScheduleView(env: Env, minutes?: number) {
+  const m = minutes ?? (await getSyncMinutes(env.DB));
+  const now = Math.floor(Date.now() / 1000);
+  const [last, gap] = await Promise.all([getLastAttempt(env.DB), getTickGap(env.DB)]);
+  return { minutes: m, presets: PRESETS, nextAt: nextSyncAt(last, m, now), lastAttempt: last, tooSlow: scheduleTooSlow(gap, m), tickGap: gap };
+}
+
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
@@ -479,6 +491,11 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       return res.ok ? mailboxState() : jsonError(res.error, 502);
     }
     if (body.action === "mailboxes_state") return mailboxState();
+
+    if (body.action === "sync_schedule_save") {
+      const minutes = await setSyncMinutes(env.DB, body.minutes);
+      return Response.json(await syncScheduleView(env, minutes));
+    }
 
     // Webhook and notification-setting changes all answer with the fresh list,
     // so the page can redraw without a reload.
@@ -533,7 +550,7 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 
   await rememberBaseUrl(env.DB, url.origin);
 
-  const [mailboxes, schemaVersion, counts, lastSync, publicDashboard, notify] = await Promise.all([
+  const [mailboxes, schemaVersion, counts, lastSync, publicDashboard, notify, sync] = await Promise.all([
     getMailboxesView(env),
     getSchemaVersion(env.DB),
     env.DB.prepare(
@@ -545,12 +562,14 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     getLastSync(env.DB),
     isDashboardPublic(env.DB),
     getNotifyView(env),
+    syncScheduleView(env),
   ]);
 
   return new Response(
     renderAdmin({
       notify,
       mailboxes,
+      sync,
       publicDashboard,
       status: {
         schemaVersion,
@@ -671,18 +690,30 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 }
 
+/** The Worker wakes on a fast cron tick. A sync runs only when one is due under
+ * the interval chosen in Admin; every tick still checks alerts and the digest,
+ * so they are on time however long the sync interval is. */
 async function runScheduled(env: Env): Promise<void> {
   await ensureSchema(env.DB);
+  const now = Math.floor(Date.now() / 1000);
+  await recordTick(env.DB, now);
 
   if (!getAdminCreds(env) || (await loadMailboxes(env)).list.filter((m) => m.enabled).length === 0) {
     console.log("sync skipped: admin login or mailbox not configured yet");
     await runNotifications(env);
     return;
   }
+  const minutes = await getSyncMinutes(env.DB);
+  if (!syncDue(await getLastAttempt(env.DB), minutes, now)) {
+    await runNotifications(env);
+    return;
+  }
   try {
     console.log("sync result:", JSON.stringify(await runSync(env)));
   } catch (err) {
-    if (err instanceof SyncBusy) console.log("sync skipped: one is already running");
-    else console.error("sync failed:", err);
+    if (err instanceof SyncBusy) {
+      console.log("sync skipped: one is already running");
+      await runNotifications(env);
+    } else console.error("sync failed:", err);
   }
 }

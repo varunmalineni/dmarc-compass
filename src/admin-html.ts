@@ -1,11 +1,13 @@
 import { escapeHtml, fmtDate, fmtNumber, layout, panel, relTime, safeJson } from "./shared-ui";
 import type { NotifyView } from "./notify";
 import type { MailboxesView } from "./mailbox-store";
+import { intervalLabel, PRESETS } from "./sync-schedule";
 import type { LastSync } from "./app-settings";
 
 export interface AdminViewModel {
   notify: NotifyView;
   mailboxes: MailboxesView;
+  sync: { minutes: number; presets: readonly number[]; nextAt: number | null; lastAttempt: number | null; tooSlow: boolean; tickGap: number | null };
   publicDashboard: boolean;
   status: {
     schemaVersion: number;
@@ -108,7 +110,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
 
   const lastSync = s.lastSync
     ? `${s.lastSync.ok ? "Succeeded" : "Failed"} ${relTime(s.lastSync.at)} &middot; ${escapeHtml(s.lastSync.summary)}`
-    : "Has not run yet. The scheduled sync runs every 15 minutes, or run one now.";
+    : `Has not run yet. The scheduled sync runs ${vm.sync.minutes === 15 ? "every 15 minutes" : "on the schedule below"}, or run one now.`;
 
   const status = panel(
     "Setup status",
@@ -135,6 +137,23 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     <div class="msg" id="sync-msg" role="status"></div>`,
   );
 
+  const sy = vm.sync;
+  const options = [...new Set([...PRESETS, sy.minutes])].sort((a, b) => a - b);
+  const schedule = panel(
+    "Sync schedule",
+    `<p class="hint" style="margin-top:0">How often the dashboard checks the mailboxes for new reports. Receiving providers only send reports about once a day, so a short interval mostly finds nothing. A long interval can let the container sleep between syncs.</p>
+    <div class="row">
+      <label for="sync-minutes" style="font-weight:600">Sync every</label>
+      <select class="input" id="sync-minutes" style="width:auto">${options
+        .map((m) => `<option value="${m}"${m === sy.minutes ? " selected" : ""}>${intervalLabel(m)}</option>`)
+        .join("")}</select>
+      <button class="btn" id="sync-save" type="button">Save</button>
+    </div>
+    <div class="hint" id="sync-next"></div>
+    <div class="warn-box" id="sync-slow" hidden>The deployed schedule only wakes the Worker about every <span id="sync-gap"></span> minutes, so a shorter interval cannot be met. Set <code>triggers.crons</code> to <code>["*/5 * * * *"]</code> in your wrangler config and run <code>npm run deploy</code>.</div>
+    <div class="msg" id="sync-save-msg" role="status"></div>`,
+  );
+
   const visibility = panel(
     "Dashboard visibility",
     `<div class="toggle-row">
@@ -155,7 +174,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   const imap = panel(
     "Mailboxes",
     `<p class="hint" style="margin-top:0">The mailboxes that receive your DMARC and TLS-RPT reports (the <code>rua=</code> and <code>_smtp._tls</code> addresses). Reports from every mailbox are combined: one view, sorted by domain, with a reported-once guarantee if the same report reaches two of them.
-    One parser reads them in turns, so each mailbox is refreshed every 15 minutes divided across the list, and original XML/JSON for a report from a mailbox that is not loaded takes a minute to fetch.</p>
+    One parser reads them in turns, so each mailbox is refreshed once per sync run (see Sync schedule), and original XML/JSON for a report from a mailbox that is not loaded takes a minute to fetch.</p>
     ${mb.canSave ? "" : '<div class="warn-box">Saving is disabled until the <code>CONFIG_ENCRYPTION_KEY</code> secret is set (see Setup status).</div>'}
     <div class="hooks" id="mailboxes"></div>
     <div class="hint" id="mailboxes-empty" hidden>No mailbox yet. Add the one that receives your reports below.</div>
@@ -278,7 +297,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   const todo =
     (s.encryptionKeyConfigured ? 0 : 1) + (s.imapConfigured ? 0 : 1) + (s.lastSync?.ok ? 0 : 1) + (s.reports > 0 ? 0 : 1);
   const tabs: Array<{ id: string; label: string; badge: string; warn?: boolean; html: string }> = [
-    { id: "status", label: "Setup status", badge: todo ? String(todo) : "", warn: true, html: status },
+    { id: "status", label: "Setup status", badge: todo ? String(todo) : "", warn: true, html: status + schedule },
     { id: "mailboxes", label: "Mailboxes", badge: mb.rows.length ? String(mb.rows.length) : "", html: imap },
     { id: "visibility", label: "Dashboard visibility", badge: "", html: visibility },
     { id: "notifications", label: "Notifications", badge: n.hooks.length ? String(n.hooks.length) : "", html: notifications },
@@ -325,6 +344,26 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     post({action:'sync'}).then(function(t){statusStale=true;var o=JSON.parse(t);var bad=(o.mailboxes||[]).filter(function(x){return !x.ok});say(m,!bad.length,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports'+(bad.length?'. Problems: '+bad.map(function(x){return x.name+' ('+x.error+')'}).join('; '):'')+'. Reload to refresh the status above.')})
       .catch(function(err){statusStale=true;say(m,false,'Sync failed: '+err.message)}).finally(function(){b.disabled=false});
   });
+  var SY=${safeJson(sy)};
+  (function(){
+    var $=function(id){return document.getElementById(id)};
+    function fmtNext(){
+      var el=$('sync-next');
+      if(SY.nextAt===null){el.textContent='The next sync is due on the next wake-up (within 5 minutes).';return}
+      var mins=Math.max(1,Math.round((SY.nextAt-Date.now()/1000)/60));
+      el.textContent='Next sync: about '+new Date(SY.nextAt*1000).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+' ('+(mins<90?'in '+mins+' min':'in about '+Math.round(mins/60)+' h')+').';
+    }
+    function warn(){var w=$('sync-slow');w.hidden=!SY.tooSlow;if(SY.tickGap)$('sync-gap').textContent=String(Math.round(SY.tickGap/60))}
+    fmtNext();warn();
+    $('sync-save').addEventListener('click',function(){
+      var b=$('sync-save'),m=$('sync-save-msg'),v=Number($('sync-minutes').value);
+      b.disabled=true;m.className='msg';m.textContent='Saving...';
+      post({action:'sync_schedule_save',minutes:v}).then(function(t){
+        SY=JSON.parse(t);fmtNext();warn();
+        say(m,true,'Saved. Syncs now run '+(v===5?'every 5 minutes':v<60?'every '+v+' minutes':v===60?'every hour':v%60===0?'every '+(v/60)+' hours':'every '+v+' minutes')+'.'+' The container may restart once on the next sync to pick this up.');
+      }).catch(function(err){say(m,false,'Failed to save: '+err.message)}).finally(function(){b.disabled=false});
+    });
+  })();
   var MB=${safeJson({ rows: mb.rows, canSave: mb.canSave })};
   (function(){
     var $=function(id){return document.getElementById(id)};
@@ -417,7 +456,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       if($('d-mode').value==='off'){el.textContent='The digest is off.';return}
       if(!N.hooks.some(function(h){return h.digest})){el.textContent='Add a webhook that receives the digest to start sending it.';return}
       if(!at){el.textContent='';return}
-      try{el.textContent='Next digest: '+new Date(at*1000).toLocaleString('en-US',{timeZone:$('d-tz').value,weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})+'. It is sent within 15 minutes of that time.'}catch(e){el.textContent=''}
+      try{el.textContent='Next digest: '+new Date(at*1000).toLocaleString('en-US',{timeZone:$('d-tz').value,weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})+'. It is sent within 5 minutes of that time.'}catch(e){el.textContent=''}
     }
     function rulesNote(){var n=['r-nfs','r-drop','r-pol','r-sync'].filter(function(i){return $(i).checked}).length;$('rules-note').textContent=n+' of 4 on'}
     ['r-nfs','r-drop','r-pol','r-sync'].forEach(function(i){$(i).addEventListener('change',rulesNote)});rulesNote();

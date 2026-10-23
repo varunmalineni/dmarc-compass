@@ -90,6 +90,14 @@ test("fingerprint changes exactly when a connection detail changes", async () =>
   assert.ok(connectionKey(m).includes("pw")); // the key itself holds the password: never store or log it
 });
 
+test("the default interval leaves the fingerprint exactly as it was, so upgrading restarts nothing", async () => {
+  const m = must(addMailbox([], base, "a")).mailbox;
+  assert.equal(connectionKey(m), JSON.stringify(["a", "imap.example.com", "dmarc@example.com", "pw", "INBOX"]));
+  assert.equal(await fingerprint(m, 900), await fingerprint(m));
+  assert.notEqual(await fingerprint(m, 300), await fingerprint(m, 900));
+  assert.notEqual(await fingerprint(m, 300), await fingerprint(m, 600));
+});
+
 test("container environment", () => {
   const m = must(addMailbox([], { ...base, folder: "Reports" }, "a")).mailbox;
   assert.deepEqual(containerEnv(m), { IMAP_HOST: "imap.example.com", IMAP_PORT: "993", IMAP_USER: "dmarc@example.com", IMAP_PASSWORD: "pw", IMAP_FOLDER: "Reports" });

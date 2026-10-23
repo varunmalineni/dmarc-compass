@@ -14,6 +14,8 @@ import { sanitizeConfig, maskWebhook, DEFAULT_CONFIG, type NotifyConfig } from "
 import { addHook, parseHooks, receiving, removeHook, toView, updateHook, type Hook, type HookView, MAX_HOOKS } from "./webhooks";
 import { alertsPayload, digestPayload, testPayload } from "./payloads";
 import { webhookHeaders } from "./sign";
+import { getSyncMinutes } from "./sync-settings";
+import { staleAfterSeconds } from "./sync-schedule";
 import { digestDue, digestPeriodDays, nextSlot } from "./digest-schedule";
 import { loadDomains } from "./domains-data";
 import {
@@ -701,7 +703,7 @@ async function collectAlerts(
           data: { problem: "sync_failed", detail: last.summary },
           line: `• The last sync failed: ${safe(last.summary, 150)}`,
         });
-      } else if (staleFor > r.syncHealth.staleMinutes * 60) {
+      } else if (staleFor > staleAfterSeconds(r.syncHealth.staleMinutes, await getSyncMinutes(env.DB))) {
         alerts.push({
           rule: "syncHealth",
           key: "sync-stale",

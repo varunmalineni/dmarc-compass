@@ -4,6 +4,8 @@ import { getAppSetting, setAppSetting } from "./app-settings.ts";
 import { decryptValue, encryptValue } from "./crypto-util.ts";
 import { callContainer } from "./sync.ts";
 import { getEffectiveImapConfig } from "./settings-data.ts";
+import { getSyncMinutes } from "./sync-settings.ts";
+import { containerIntervalSeconds } from "./sync-schedule.ts";
 import {
   addMailbox,
   DEFAULT_ID,
@@ -215,9 +217,15 @@ export async function waitUntilRead(
   };
 }
 
-/** Makes the container read `mailbox`. Does nothing when it already is. Otherwise
- * it records the choice, stops the container (the class reads the choice when it
- * starts again), and waits for the first read to finish. */
+/** Makes the container read `mailbox`, and waits until it has finished reading
+ * it. When the container is already on this mailbox that is all it does. When
+ * it is not, it records the choice, stops the container (the class reads the
+ * choice when it starts again) and waits for the first read.
+ *
+ * It always waits, not only after a switch: a container that slept between two
+ * syncs wakes with an empty memory, and a sync that ran straight away would see
+ * no reports. A mailbox that never finishes reading (wrong login, wrong
+ * folder) therefore reports a clear timeout instead of silently syncing nothing. */
 export async function loadMailbox(
   env: MailboxEnv & { ADMIN_USER?: string; ADMIN_PASSWORD?: string; HTTP_SERVER_USER?: string; HTTP_SERVER_PASSWORD?: string },
   container: ContainerLike,
@@ -226,16 +234,19 @@ export async function loadMailbox(
   timeoutMs: number,
   opts: { onlyMailbox?: boolean; pollMs?: number } = {},
 ): Promise<Done & { switched?: boolean }> {
-  const fp = await fingerprint(mailbox);
+  const fp = await fingerprint(mailbox, containerIntervalSeconds(await getSyncMinutes(env.DB)));
   const loaded = await getLoaded(env.DB);
-  if (loaded && loaded.id === mailbox.id && loaded.fp === fp) return { ok: true, switched: false };
 
   // First run of this version with a single mailbox: the container was started with
   // that mailbox's settings (changing them always restarted it), so adopt it as it is.
   if (!loaded && opts.onlyMailbox) {
     await setAppSetting(env.DB, "container_desired", mailbox.id);
     await setAppSetting(env.DB, "container_loaded", JSON.stringify({ id: mailbox.id, fp } satisfies Loaded));
-    return { ok: true, switched: false };
+  }
+
+  if ((loaded && loaded.id === mailbox.id && loaded.fp === fp) || (!loaded && opts.onlyMailbox)) {
+    const ready = await waitUntilRead(container, env, timeoutMs, opts.pollMs);
+    return ready.ok ? { ok: true, switched: false } : ready;
   }
 
   await setAppSetting(env.DB, "container_desired", mailbox.id);

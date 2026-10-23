@@ -56,9 +56,11 @@ test("saving needs the encryption key; the list is stored encrypted", async () =
   const db = makeDb();
   const r = await addMailboxEntry({ DB: db }, base);
   assert.equal(r.ok, false);
-  await addMailboxEntry(env(db), base);
+  // A long distinctive password: a 2-character one would turn up in random base64 by chance.
+  await addMailboxEntry(env(db), { ...base, password: "correct-horse-battery-staple-8f3a" });
   const stored = (db.raw.prepare("SELECT value FROM settings WHERE key = 'MAILBOXES'").get() as { value: string }).value;
-  assert.ok(!stored.includes("imap.example.com") && !stored.includes("dmarc@example.com") && !stored.includes("pw"));
+  assert.ok(!stored.includes("imap.example.com") && !stored.includes("dmarc@example.com") && !stored.includes("correct-horse"));
+  assert.equal((await loadMailboxes(env(db))).list[0].password, "correct-horse-battery-staple-8f3a"); // and it decrypts back
 });
 
 test("update, pause and remove persist; removing clears its status", async () => {
@@ -159,11 +161,50 @@ test("loadMailbox: a mailbox that never finishes reading is not recorded as load
 test("loadMailbox: the first run with a single mailbox adopts the running container without a restart", async () => {
   const db = makeDb();
   let stops = 0;
-  const r = await loadMailbox({ DB: db, ...creds }, fakeContainer([null]), await mb(), async () => { stops++; }, 1000, { onlyMailbox: true, pollMs: 1 });
+  const r = await loadMailbox({ DB: db, ...creds }, fakeContainer([1]), await mb(), async () => { stops++; }, 1000, { onlyMailbox: true, pollMs: 1 });
   assert.deepEqual([r.ok, stops], [true, 0]);
   // ...and afterwards a changed password still triggers a restart
   const r2 = await loadMailbox({ DB: db, ...creds }, fakeContainer([1]), await mb({ password: "changed" }), async () => { stops++; }, 1000, { onlyMailbox: true, pollMs: 1 });
   assert.deepEqual([r2.ok, stops], [true, 1]);
+});
+
+test("loadMailbox: even when nothing is switched it waits for the parser, which may have just woken up empty", async () => {
+  const db = makeDb();
+  let stops = 0;
+  await loadMailbox({ DB: db, ...creds }, fakeContainer([1]), await mb(), async () => { stops++; }, 1000, { pollMs: 1 });
+  const woke = fakeContainer([null, null, null, 1792000000]); // container slept; the first reads say "not yet"
+  const r = await loadMailbox({ DB: db, ...creds }, woke, await mb(), async () => { stops++; }, 1000, { pollMs: 1 });
+  assert.deepEqual([r.ok, (r as { switched?: boolean }).switched, stops, woke.calls.length], [true, false, 1, 4]);
+});
+
+test("loadMailbox: a loaded mailbox whose parser never finishes reading reports a timeout instead of syncing nothing", async () => {
+  const db = makeDb();
+  await loadMailbox({ DB: db, ...creds }, fakeContainer([1]), await mb(), async () => {}, 1000, { pollMs: 1 });
+  const r = await loadMailbox({ DB: db, ...creds }, fakeContainer([null]), await mb(), async () => {}, 40, { pollMs: 5 });
+  assert.equal(r.ok, false);
+  assert.match((r as { error: string }).error, /Timed out waiting for the mailbox to be read/);
+});
+
+test("loadMailbox: changing the sync interval restarts the container once (it re-reads on a new schedule)", async () => {
+  const db = makeDb();
+  let stops = 0;
+  const c = fakeContainer([1]);
+  const run = () => loadMailbox({ DB: db, ...creds }, c, mb2, async () => { stops++; }, 1000, { pollMs: 1 });
+  const mb2 = await mb();
+  await run(); // 15 min (default): first load
+  await run();
+  assert.equal(stops, 1);
+  db.raw.exec("INSERT OR REPLACE INTO app_settings VALUES ('sync_interval_minutes', '5', 0)");
+  await run(); // 5 min -> container re-reads every 5 min: restart
+  assert.equal(stops, 2);
+  await run();
+  assert.equal(stops, 2);
+  db.raw.exec("INSERT OR REPLACE INTO app_settings VALUES ('sync_interval_minutes', '360', 0)");
+  await run(); // 6 h -> container interval is back to 15 min: restart
+  assert.equal(stops, 3);
+  db.raw.exec("INSERT OR REPLACE INTO app_settings VALUES ('sync_interval_minutes', '60', 0)");
+  await run(); // 60 min and 6 h both give a 15 min container interval: no restart
+  assert.equal(stops, 3);
 });
 
 test("the container starts with the chosen mailbox, else the first enabled one", async () => {
