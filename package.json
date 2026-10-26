@@ -28,6 +28,6 @@
     "chart.js": "^4.6.1",
     "leaflet": "^1.9.4",
     "typescript": "^7.0.2",
-    "wrangler": "^4.151.3"
+    "wrangler": "^4.153.0"
   }
 }
