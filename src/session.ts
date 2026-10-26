@@ -9,6 +9,11 @@
 
 export const SESSION_SECONDS = 12 * 3600;
 export const COOKIE_NAME = "__Host-dc_session";
+/** Used only when a self-hosted install is deliberately run over plain HTTP: the __Host- prefix
+ * and the Secure flag both require HTTPS, so the browser would refuse the cookie. */
+export const INSECURE_COOKIE_NAME = "dc_session";
+
+export const cookieName = (secure: boolean) => (secure ? COOKIE_NAME : INSECURE_COOKIE_NAME);
 
 const enc = new TextEncoder();
 
@@ -59,12 +64,12 @@ export function readCookie(header: string | null, name: string): string | null {
   return null;
 }
 
-export function sessionCookie(token: string): string {
-  return `${COOKIE_NAME}=${token}; Max-Age=${SESSION_SECONDS}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+export function sessionCookie(token: string, secure = true): string {
+  return `${cookieName(secure)}=${token}; Max-Age=${SESSION_SECONDS}; Path=/; ${secure ? "Secure; " : ""}HttpOnly; SameSite=Strict`;
 }
 
-export function clearCookie(): string {
-  return `${COOKIE_NAME}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict`;
+export function clearCookie(secure = true): string {
+  return `${cookieName(secure)}=; Max-Age=0; Path=/; ${secure ? "Secure; " : ""}HttpOnly; SameSite=Strict`;
 }
 
 /** Where to go after signing in: only a path on this site, never another address. */

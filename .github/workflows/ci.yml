@@ -17,6 +17,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Self-hosted bundle builds
+        run: npm run build:node
       - name: Setup scripts parse
         run: |
           node --check scripts/setup.mjs

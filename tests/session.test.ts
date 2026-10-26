@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeToken, verifyToken, readCookie, sessionCookie, clearCookie, safeNext, requesterKind, SESSION_SECONDS, COOKIE_NAME } from "../src/session.ts";
+import { makeToken, verifyToken, readCookie, sessionCookie, clearCookie, safeNext, requesterKind, cookieName, SESSION_SECONDS, COOKIE_NAME, INSECURE_COOKIE_NAME } from "../src/session.ts";
 
 const NOW = 1_800_000_000;
 const S = "a".repeat(64);
@@ -67,4 +67,15 @@ test("browsers opening a page are redirected; scripts in a page get a plain 401;
   assert.equal(requesterKind("POST", "same-origin", "*/*"), "script");
   assert.equal(requesterKind("GET", null, "*/*"), "client");
   assert.equal(requesterKind("POST", null, null), "client");
+});
+
+test("the plain-HTTP cookie (self-hosted trials) drops Secure and the __Host- prefix, and keeps the rest", () => {
+  assert.equal(cookieName(true), COOKIE_NAME);
+  assert.equal(cookieName(false), INSECURE_COOKIE_NAME);
+  const c = sessionCookie("t", false);
+  assert.ok(c.startsWith("dc_session=t;"));
+  assert.ok(!c.includes("Secure") && !c.includes("__Host-"));
+  for (const attr of ["HttpOnly", "SameSite=Strict", "Path=/", `Max-Age=${SESSION_SECONDS}`]) assert.ok(c.includes(attr), attr);
+  assert.ok(clearCookie(false).startsWith("dc_session=;") && clearCookie(false).includes("Max-Age=0"));
+  assert.equal(sessionCookie("t"), sessionCookie("t", true), "the default is still the strict cookie");
 });

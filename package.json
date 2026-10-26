@@ -14,10 +14,12 @@
     "deploy": "node scripts/wrangler.mjs deploy",
     "tail": "node scripts/wrangler.mjs tail",
     "demo": "node scripts/seed-demo.mjs --apply",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/*.test.ts\"",
     "vendor": "node scripts/vendor.mjs",
-    "bench": "node scripts/bench.mjs"
+    "bench": "node scripts/bench.mjs",
+    "build:node": "node scripts/build-node.mjs",
+    "start:node": "npm run build:node && node dist/server.mjs"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"
@@ -25,7 +27,9 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261021.1",
     "@fontsource-variable/inter": "^5.3.0",
+    "@types/node": "^24.19.2",
     "chart.js": "^4.6.1",
+    "esbuild": "^0.28.2",
     "leaflet": "^1.9.4",
     "typescript": "^7.0.2",
     "wrangler": "^4.153.0"

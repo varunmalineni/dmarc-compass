@@ -17,6 +17,8 @@ export interface AdminViewModel {
     tlsReports: number;
     domains: number;
     encryptionKeyConfigured: boolean;
+    /** This page was reached over plain HTTP and the install allows it. */
+    insecureHttp?: boolean;
     imapConfigured: boolean;
     lastSync: LastSync | null;
   };
@@ -124,6 +126,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
           ? "Mailbox credentials saved here are encrypted before they are stored."
           : "Missing. Without it, credentials can't be saved from this page. Run <code>openssl rand -base64 32 | npx wrangler secret put CONFIG_ENCRYPTION_KEY</code>.",
       )}
+      ${s.insecureHttp ? check(false, "Sign-in over plain HTTP", "Anyone on the network can read your password and session. Put this behind HTTPS (a reverse proxy or ingress), then remove <code>ALLOW_INSECURE_HTTP</code>.") : ""}
       ${check(s.imapConfigured, "Mailbox connected", s.imapConfigured ? "Host, user and password are set." : "Not configured yet. Enter the mailbox that receives your DMARC reports below.")}
       ${check(Boolean(s.lastSync?.ok), "Last sync", lastSync)}
       ${check(
@@ -296,7 +299,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   );
 
   const todo =
-    (s.encryptionKeyConfigured ? 0 : 1) + (s.imapConfigured ? 0 : 1) + (s.lastSync?.ok ? 0 : 1) + (s.reports > 0 ? 0 : 1);
+    (s.encryptionKeyConfigured ? 0 : 1) + (s.insecureHttp ? 1 : 0) + (s.imapConfigured ? 0 : 1) + (s.lastSync?.ok ? 0 : 1) + (s.reports > 0 ? 0 : 1);
   const tabs: Array<{ id: string; label: string; badge: string; warn?: boolean; html: string }> = [
     { id: "status", label: "Setup status", badge: todo ? String(todo) : "", warn: true, html: status + schedule },
     { id: "mailboxes", label: "Mailboxes", badge: mb.rows.length ? String(mb.rows.length) : "", html: imap },

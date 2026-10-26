@@ -48,7 +48,7 @@ import { renderMapBody } from "./map-html";
 import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
 import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync, getAppSetting } from "./app-settings";
 import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
-import { clearCookie, COOKIE_NAME, makeToken, readCookie, requesterKind, safeNext, sessionCookie, verifyToken } from "./session";
+import { clearCookie, cookieName, makeToken, readCookie, requesterKind, safeNext, sessionCookie, verifyToken } from "./session";
 import { renderLogin } from "./login-html";
 import { parseFilters, parseList, scopeLabel, rangeLabel, withFilters } from "./filters";
 import { layout } from "./shared-ui";
@@ -70,7 +70,12 @@ export interface Env extends AdminEnv {
   IMAP_TEST_PORT?: string;
   /** Optional: how long a sync waits for the parser to finish reading one mailbox (default 240). Raise it for very large folders. */
   READ_TIMEOUT_SECONDS?: string;
+  /** Self-hosted only: allow signing in over plain HTTP (a trial on a home network). The default needs HTTPS. */
+  ALLOW_INSECURE_HTTP?: string;
 }
+
+/** Plain HTTP is accepted for sign-in only when the install was told to allow it. */
+const insecureHttp = (env: Env, url: URL) => env.ALLOW_INSECURE_HTTP === "true" && url.protocol === "http:";
 
 const HTML = { "content-type": "text/html; charset=utf-8" };
 
@@ -120,7 +125,7 @@ async function sessionSecret(db: D1Database): Promise<string> {
 /** Is there a valid sign-in cookie? Checking it is a signature check: no throttling, no writes. */
 async function hasSession(request: Request, env: Env): Promise<boolean> {
   const creds = getAdminCreds(env);
-  const token = readCookie(request.headers.get("cookie"), COOKIE_NAME);
+  const token = readCookie(request.headers.get("cookie"), cookieName(!insecureHttp(env, new URL(request.url))));
   if (!creds || !token) return false;
   return verifyToken(token, await sessionSecret(env.DB), creds.user, creds.password, Math.floor(Date.now() / 1000));
 }
@@ -228,13 +233,13 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
 
   if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
   const token = await makeToken(await sessionSecret(env.DB), creds.user, creds.password, now);
-  return new Response(null, { status: 303, headers: { location: next, "set-cookie": sessionCookie(token), "cache-control": "no-store" } });
+  return new Response(null, { status: 303, headers: { location: next, "set-cookie": sessionCookie(token, !insecureHttp(env, url)), "cache-control": "no-store" } });
 }
 
-function handleLogout(request: Request, url: URL): Response {
+function handleLogout(request: Request, env: Env, url: URL): Response {
   if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405, headers: { allow: "POST" } });
   if (!sameOrigin(request, url)) return jsonError("Forbidden", 403);
-  return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": clearCookie(), "cache-control": "no-store" } });
+  return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": clearCookie(!insecureHttp(env, url)), "cache-control": "no-store" } });
 }
 
 /** Gate for the read-only dashboard pages: open when the admin has made the
@@ -601,6 +606,7 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
         tlsReports: counts?.tls_reports ?? 0,
         domains: counts?.domains ?? 0,
         encryptionKeyConfigured: Boolean(env.CONFIG_ENCRYPTION_KEY),
+        insecureHttp: insecureHttp(env, url),
         imapConfigured: mailboxes.rows.some((m) => m.enabled),
         lastSync,
       },
@@ -639,7 +645,7 @@ async function route(request: Request, env: Env, rt: Runtime): Promise<Response>
     await ensureSchema(env.DB);
 
     if (pathname === "/login") return handleLogin(request, env, url);
-    if (pathname === "/logout") return handleLogout(request, url);
+    if (pathname === "/logout") return handleLogout(request, env, url);
 
     if (pathname === "/admin") return handleAdmin(request, env, rt, url);
 

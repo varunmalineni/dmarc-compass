@@ -193,10 +193,13 @@ export async function waitUntilRead(
   env: { DB: D1Database; ADMIN_USER?: string; ADMIN_PASSWORD?: string; HTTP_SERVER_USER?: string; HTTP_SERVER_PASSWORD?: string },
   timeoutMs: number,
   pollMs = 3000,
+  /** Lets a caller that knows the parser has died stop waiting at once. */
+  gone: () => boolean = () => false,
 ): Promise<Done> {
   const deadline = Date.now() + timeoutMs;
   let last = "the parser did not answer";
   while (Date.now() < deadline) {
+    if (gone()) return { ok: false, error: "The mailbox reader stopped before it finished reading the mailbox." };
     try {
       const res = await callContainer(container, "/summary", env);
       if (res.ok) {
