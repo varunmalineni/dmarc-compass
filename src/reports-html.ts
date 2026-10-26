@@ -149,7 +149,7 @@ export function renderReportDetailBody(d: ReportDetail, f: Filters, mailboxName:
     function get(fmt){
       return fetch(base+'/'+fmt,{credentials:'same-origin'}).then(function(r){
         return r.text().then(function(t){
-          if(r.status===401)throw new Error('Sign in required: open the Admin page and log in, then try again.');
+          if(r.status===401){location.href='/login?next='+encodeURIComponent(location.pathname+location.search);throw new Error('Your session ended. Redirecting to the sign-in page...');}
           if(r.status===429)throw new Error('Too many failed logins. Try again later.');
           if(!r.ok)throw new Error(t.trim()||('The request failed ('+r.status+').'));
           var m=(r.headers.get('content-disposition')||'').match(/filename="([^"]+)"/);

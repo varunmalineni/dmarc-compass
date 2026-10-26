@@ -222,6 +222,8 @@ export interface PageOpts {
   scripts?: string;
   /** Page-specific CSS appended after the shared styles. */
   css?: string;
+  /** Signed in with the login page (not just a script's credentials): shows Sign out. */
+  signedIn?: boolean;
 }
 
 const ICON = {
@@ -230,6 +232,7 @@ const ICON = {
   reports: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
   tls: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
   map: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11a7 7 0 0 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+  signout: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
   admin: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>',
   report: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6"/></svg>',
@@ -239,10 +242,10 @@ const ICON = {
   globe: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
 };
 
-const LOGO =
+export const LOGO =
   '<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><path d="M50 4 L90 20 V48 C90 74 72 90 50 97 C28 90 10 74 10 48 V20 Z" fill="url(#lg)"/><path d="M32 50 L45 63 L70 36" stroke="#fff" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-const FAVICON =
+export const FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%23a855f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 4 L90 20 V48 C90 74 72 90 50 97 C28 90 10 74 10 48 V20 Z' fill='url(%23g)'/%3E%3Cpath d='M32 50 L45 63 L70 36' stroke='white' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E";
 
 const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
@@ -255,7 +258,7 @@ const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
 ];
 
 // Dark is the default (set on <html>); a saved choice overrides it before first paint, so the page never flashes the wrong theme.
-const THEME_INIT = `try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}`;
+export const THEME_INIT = `try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}`;
 
 const CHART_SETUP = `
 function themeCharts(){
@@ -415,6 +418,7 @@ ${o.leaflet ? `<meta name="referrer" content="origin">
     <div class="side-foot">
       <a class="side-link" href="/admin"${o.active === "admin" ? ' aria-current="page"' : ""}>${ICON.admin}<span>Admin</span></a>
       <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle dark mode">${ICON.sun}${ICON.moon}<span>Theme</span></button>
+      ${o.signedIn ? `<form method="post" action="/logout" class="signout"><button class="theme-btn" type="submit">${ICON.signout}<span>Sign out</span></button></form>` : ""}
     </div>
   </aside>
   <div class="main-col">

@@ -5,6 +5,7 @@ import { intervalLabel, PRESETS } from "./sync-schedule";
 import type { LastSync } from "./app-settings";
 
 export interface AdminViewModel {
+  signedIn?: boolean;
   notify: NotifyView;
   mailboxes: MailboxesView;
   sync: { minutes: number; presets: readonly number[]; nextAt: number | null; lastAttempt: number | null; tooSlow: boolean; tickGap: number | null };
@@ -330,7 +331,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   // Every write carries a custom header. A cross-site <form> can't set one
   // without a CORS preflight (which this app never allows), which is what
   // protects these endpoints from CSRF alongside Basic Auth.
-  function post(body){return fetch('/admin',{method:'POST',headers:{'content-type':'application/json','x-settings-request':'1'},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){if(!r.ok)throw new Error(t);return t})})}
+  function post(body){return fetch('/admin',{method:'POST',headers:{'content-type':'application/json','x-settings-request':'1'},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){if(r.status===401){location.href='/login?next=/admin';throw new Error('Your session ended. Redirecting to the sign-in page...');}if(!r.ok)throw new Error(t);return t})})}
   function say(el,ok,t){el.className='msg '+(ok?'ok':'err');el.textContent=t}
   document.getElementById('public-toggle').addEventListener('change',function(e){
     var t=e.target,m=document.getElementById('vis-msg');t.disabled=true;m.className='msg';m.textContent='Saving...';
@@ -572,6 +573,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
   })();`;
 
   return layout({
+    signedIn: vm.signedIn,
     title: "Admin",
     subtitle: "Setup, mailboxes, notifications and visibility. Requires the admin login.",
     active: "admin",

@@ -98,6 +98,8 @@ a { color: var(--accent); }
 .nav a:hover, .side-link:hover, .theme-btn:hover { background: rgba(255,255,255,0.07); color: #fff; }
 .nav a[aria-current="page"], .side-link[aria-current="page"] { background: rgba(255,255,255,0.1); color: #fff; box-shadow: inset 2px 0 0 #a5b4fc; }
 .nav svg, .side-link svg, .theme-btn svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.signout { margin: 0; }
+.signout .theme-btn { width: 100%; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; }
 .theme-btn .moon { display: none; }
 :root[data-theme="dark"] .theme-btn .sun { display: none; }

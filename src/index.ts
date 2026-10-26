@@ -49,8 +49,10 @@ import { renderTlsBody } from "./tls-html";
 import { loadMapPoints } from "./map-data";
 import { renderMapBody } from "./map-html";
 import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
-import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync } from "./app-settings";
+import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync, getAppSetting } from "./app-settings";
 import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
+import { clearCookie, COOKIE_NAME, makeToken, readCookie, requesterKind, safeNext, sessionCookie, verifyToken } from "./session";
+import { renderLogin } from "./login-html";
 import { parseFilters, parseList, scopeLabel, rangeLabel, withFilters } from "./filters";
 import { layout } from "./shared-ui";
 
@@ -160,30 +162,73 @@ function credentialsMatch(request: Request, env: Env): boolean {
   return userOk && passOk;
 }
 
-function challenge(env: Env): Response {
+function challenge(env: Env, withHeader = true): Response {
   // No admin login exists yet: say what to do instead of showing a login
   // prompt that can never succeed.
   if (!getAdminCreds(env)) return new Response(SETUP_HELP, { status: 503 });
   return new Response("Unauthorized\n", {
     status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="dmarc-compass"' },
+    headers: withHeader ? { "WWW-Authenticate": 'Basic realm="dmarc-compass"' } : {},
   });
 }
 
-/** Null when the request carries the admin login, otherwise the response to
- * send. Repeated wrong passwords from one address lock that address out for a
- * while (HTTP 429); a request with no credentials at all (a browser's first
- * try before it shows the login prompt) is never counted. */
-async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
-  if (!getAdminCreds(env)) return challenge(env);
-  if (!request.headers.get("authorization")) return challenge(env);
+/** The key that signs login sessions: random, made on first use, kept in the database. */
+async function sessionSecret(db: D1Database): Promise<string> {
+  const existing = await getAppSetting(db, "session_secret");
+  if (existing) return existing;
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const fresh = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  await db.prepare("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('session_secret', ?, ?)").bind(fresh, Math.floor(Date.now() / 1000)).run();
+  return (await getAppSetting(db, "session_secret")) ?? fresh; // another request may have won the race
+}
 
-  const client = clientKey(request.headers.get("cf-connecting-ip"));
-  const now = Math.floor(Date.now() / 1000);
+/** Is there a valid sign-in cookie? Checking it is a signature check: no throttling, no writes. */
+async function hasSession(request: Request, env: Env): Promise<boolean> {
+  const creds = getAdminCreds(env);
+  const token = readCookie(request.headers.get("cookie"), COOKIE_NAME);
+  if (!creds || !token) return false;
+  return verifyToken(token, await sessionSecret(env.DB), creds.user, creds.password, Math.floor(Date.now() / 1000));
+}
+
+async function loadAttempts(env: Env, client: string): Promise<AttemptState | null> {
   const row = await env.DB.prepare("SELECT failures, window_start, locked_until FROM auth_attempts WHERE client = ?")
     .bind(client)
     .first<{ failures: number; window_start: number; locked_until: number }>();
-  const state: AttemptState | null = row ? { failures: row.failures, windowStart: row.window_start, lockedUntil: row.locked_until } : null;
+  return row ? { failures: row.failures, windowStart: row.window_start, lockedUntil: row.locked_until } : null;
+}
+
+async function noteFailure(env: Env, client: string, state: AttemptState | null, now: number): Promise<void> {
+  const next = recordFailure(state, now);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO auth_attempts (client, failures, window_start, locked_until) VALUES (?, ?, ?, ?)
+       ON CONFLICT(client) DO UPDATE SET failures = excluded.failures, window_start = excluded.window_start, locked_until = excluded.locked_until`,
+    ).bind(client, next.failures, next.windowStart, next.lockedUntil),
+    // Housekeeping: forget addresses whose window and lock are both over.
+    env.DB.prepare("DELETE FROM auth_attempts WHERE locked_until < ? AND window_start < ?").bind(now, now - 86400),
+  ]);
+}
+
+/** Null when the request is signed in, either with the sign-in cookie or with a
+ * username and password in the Authorization header (scripts). Otherwise the
+ * response to send: browsers are redirected to the sign-in page. Repeated wrong
+ * passwords from one address lock that address out for a while (HTTP 429). */
+async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
+  if (!getAdminCreds(env)) return challenge(env);
+
+  if (!request.headers.get("authorization")) {
+    if (await hasSession(request, env)) return null;
+    const kind = requesterKind(request.method, request.headers.get("sec-fetch-mode"), request.headers.get("accept"));
+    if (kind === "page") {
+      const url = new URL(request.url);
+      return new Response(null, { status: 303, headers: { location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` } });
+    }
+    return challenge(env, kind === "client");
+  }
+
+  const client = clientKey(request.headers.get("cf-connecting-ip"));
+  const now = Math.floor(Date.now() / 1000);
+  const state = await loadAttempts(env, client);
 
   if (isLocked(state, now)) {
     return new Response("Too many failed login attempts. Try again later.\n", {
@@ -196,16 +241,65 @@ async function requireAdmin(request: Request, env: Env): Promise<Response | null
     return null;
   }
 
-  const next = recordFailure(state, now);
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO auth_attempts (client, failures, window_start, locked_until) VALUES (?, ?, ?, ?)
-       ON CONFLICT(client) DO UPDATE SET failures = excluded.failures, window_start = excluded.window_start, locked_until = excluded.locked_until`,
-    ).bind(client, next.failures, next.windowStart, next.lockedUntil),
-    // Housekeeping: forget addresses whose window and lock are both over.
-    env.DB.prepare("DELETE FROM auth_attempts WHERE locked_until < ? AND window_start < ?").bind(now, now - 86400),
-  ]);
+  await noteFailure(env, client, state, now);
   return challenge(env);
+}
+
+const sameOrigin = (request: Request, url: URL) => {
+  const origin = request.headers.get("origin");
+  return origin === null || origin === url.origin;
+};
+
+/** The sign-in page and form. */
+async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const creds = getAdminCreds(env);
+  if (!creds) return new Response(SETUP_HELP, { status: 503 });
+  const page = (status: number, opts: Omit<Parameters<typeof renderLogin>[0], "url">) => new Response(renderLogin({ ...opts, url }), { status, headers: { ...HTML, "cache-control": "no-store", "x-robots-tag": "noindex" } });
+
+  if (request.method === "GET") {
+    const next = safeNext(url.searchParams.get("next"));
+    if (await hasSession(request, env)) return new Response(null, { status: 303, headers: { location: next } });
+    return page(200, { next });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405, headers: { allow: "GET, POST" } });
+  if (!sameOrigin(request, url)) return jsonError("Forbidden", 403);
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return jsonError("Bad request", 400);
+  }
+  const text = (k: string) => (typeof form.get(k) === "string" ? (form.get(k) as string) : "");
+  const next = safeNext(text("next"));
+
+  const client = clientKey(request.headers.get("cf-connecting-ip"));
+  const now = Math.floor(Date.now() / 1000);
+  const state = await loadAttempts(env, client);
+  if (isLocked(state, now)) {
+    const mins = Math.ceil(retryAfter(state as AttemptState, now) / 60);
+    const res = page(429, { next, locked: true, error: `Too many failed attempts. Try again in ${mins} minute${mins === 1 ? "" : "s"}.` });
+    res.headers.set("retry-after", String(retryAfter(state as AttemptState, now)));
+    return res;
+  }
+
+  // Both are always compared, so timing does not reveal which one was wrong, and the message does not either.
+  const userOk = constantTimeEqual(text("username"), creds.user);
+  const passOk = constantTimeEqual(text("password"), creds.password);
+  if (!(userOk && passOk)) {
+    await noteFailure(env, client, state, now);
+    return page(401, { next, error: "Wrong username or password." });
+  }
+
+  if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
+  const token = await makeToken(await sessionSecret(env.DB), creds.user, creds.password, now);
+  return new Response(null, { status: 303, headers: { location: next, "set-cookie": sessionCookie(token), "cache-control": "no-store" } });
+}
+
+function handleLogout(request: Request, url: URL): Response {
+  if (request.method !== "POST") return new Response("Method not allowed\n", { status: 405, headers: { allow: "POST" } });
+  if (!sameOrigin(request, url)) return jsonError("Forbidden", 403);
+  return new Response(null, { status: 303, headers: { location: "/login", "set-cookie": clearCookie(), "cache-control": "no-store" } });
 }
 
 /** Gate for the read-only dashboard pages: open when the admin has made the
@@ -568,6 +662,7 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 
   return new Response(
     renderAdmin({
+      signedIn: await hasSession(request, env),
       notify,
       mailboxes,
       sync,
@@ -621,6 +716,9 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     await ensureSchema(env.DB);
 
+    if (pathname === "/login") return handleLogin(request, env, url);
+    if (pathname === "/logout") return handleLogout(request, url);
+
     if (pathname === "/admin") return handleAdmin(request, env, url);
 
     if (pathname === "/report") return handleSummary(request, env, url);
@@ -638,7 +736,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (blocked) return blocked;
 
     const f = parseFilters(url);
-    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout(opts), { headers: HTML });
+    const signedIn = await hasSession(request, env);
+    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout({ ...opts, signedIn }), { headers: HTML });
     const scope = `${scopeLabel(f)} &middot; ${rangeLabel(f.range)}`;
 
     if (pathname === "/") {
