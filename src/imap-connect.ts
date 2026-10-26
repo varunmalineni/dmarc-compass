@@ -1,9 +1,9 @@
-// The IMAP connection test. Opens a TCP connection from the Worker, so it only
-// runs on Workers; the protocol helpers it uses are in imap-probe.ts.
+// The IMAP connection test. Opens a TCP connection through the runtime (Workers
+// sockets, or Node's net), and the protocol helpers it uses are in imap-probe.ts.
 
-import { connect } from "cloudflare:sockets";
 import { loadMailboxes, recordMailboxResult, type MailboxEnv } from "./mailbox-store";
 import { validateHost } from "./mailboxes";
+import type { Runtime, TcpSocket } from "./runtime";
 import {
   awaitingContinuation,
   existsCount,
@@ -36,6 +36,7 @@ async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, done: 
  * read-only SELECT, and always logs out. */
 export async function probeMailbox(
   m: { host: string; user: string; password: string; folder: string },
+  connect: Runtime["connect"],
   devPort?: number,
 ): Promise<ProbeResult> {
   const host = validateHost(m.host);
@@ -46,9 +47,9 @@ export async function probeMailbox(
   // A plain-TCP port is honoured only for a server on this machine, so tests can use a local fake.
   const local = host.host === "localhost" || host.host === "127.0.0.1";
   const port = local && devPort ? devPort : 993;
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: TcpSocket | null = null;
   try {
-    socket = connect({ hostname: host.host, port }, { secureTransport: local ? "off" : "on", allowHalfOpen: false });
+    socket = connect(host.host, port, !local);
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
     const enc = new TextEncoder();
@@ -89,11 +90,11 @@ export async function probeMailbox(
   }
 }
 
-export async function testMailbox(env: MailboxEnv, id: string): Promise<ProbeResult> {
+export async function testMailbox(env: MailboxEnv, connect: Runtime["connect"], id: string): Promise<ProbeResult> {
   const { list } = await loadMailboxes(env);
   const m = list.find((x) => x.id === id);
   if (!m) return { ok: false, error: "That mailbox no longer exists." };
-  const res = await probeMailbox(m, Number(env.IMAP_TEST_PORT) || undefined);
+  const res = await probeMailbox(m, connect, Number(env.IMAP_TEST_PORT) || undefined);
   await recordMailboxResult(env.DB, id, {
     at: Math.floor(Date.now() / 1000),
     ok: res.ok,
