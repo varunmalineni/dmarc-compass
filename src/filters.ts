@@ -63,6 +63,16 @@ export function domainFilter(column: string, f: Filters): { sql: string; params:
   return { sql: ` AND ${column} IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(f.domains)] };
 }
 
+/** Pins windowed scans of dmarc_records to the date index for short windows over
+ * all domains. Without it SQLite prefers idx_records_ip or idx_records_domain to
+ * avoid a sort, and walks the whole history instead of the selected window (4x slower
+ * for 90 days of a 2-year history). Not used when a domain filter narrows the scan
+ * (the domain index is right then), nor for a year or all time (the window is most of
+ * the table, and walking in source order is then faster). */
+export function recordsByDate(f: Filters): string {
+  return f.domains.length === 0 && f.range !== null && f.range <= 90 ? " INDEXED BY idx_records_date" : "";
+}
+
 /** Escapes a user search string for use in LIKE ... ESCAPE '\\'. */
 export function likePattern(q: string): string {
   return `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`;

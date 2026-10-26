@@ -16,7 +16,7 @@ import {
 } from "./mailbox-store";
 import { testMailbox } from "./imap-connect";
 import { runRotation, summarize } from "./rotation";
-import { getLastAttempt, getSyncMinutes, getTickGap, markAttempt, recordTick, setSyncMinutes } from "./sync-settings";
+import { getLastAttempt, getSyncMinutes, getTickGap, hasBacklog, markAttempt, recordTick, setBacklog, setSyncMinutes } from "./sync-settings";
 import { containerIntervalSeconds, nextSyncAt, PRESETS, scheduleTooSlow, syncDue } from "./sync-schedule";
 import { containerEnv, DEFAULT_ID } from "./mailboxes";
 import { loadOverview, SOURCE_SORT_KEYS } from "./dashboard-data";
@@ -269,6 +269,7 @@ async function runSync(env: Env): Promise<SyncOutcome> {
       { budgetMs: SYNC_BUDGET_MS, minPerMailboxMs: MIN_PER_MAILBOX_MS },
     );
     await setCursor(env.DB, result.nextCursor);
+    await setBacklog(env.DB, result.outcomes.some((o) => o.ok && o.backlog) || result.partial);
 
     const sum = summarize(result.outcomes, result.partial);
     await recordSync(env.DB, sum.ok, sum.text);
@@ -704,7 +705,7 @@ async function runScheduled(env: Env): Promise<void> {
     return;
   }
   const minutes = await getSyncMinutes(env.DB);
-  if (!syncDue(await getLastAttempt(env.DB), minutes, now)) {
+  if (!syncDue(await getLastAttempt(env.DB), minutes, now) && !(await hasBacklog(env.DB))) {
     await runNotifications(env);
     return;
   }

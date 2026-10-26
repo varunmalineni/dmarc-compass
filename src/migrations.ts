@@ -174,6 +174,17 @@ const MIGRATIONS: Migration[] = [
       `ALTER TABLE tls_reports ADD COLUMN mailbox_id TEXT`,
     ],
   },
+  {
+    id: 7,
+    name: "indexes for large histories",
+    statements: [
+      // Report lists, counts and exports filter and order by date_end; "latest report per domain" reads (domain, date_end).
+      `CREATE INDEX IF NOT EXISTS idx_reports_date_end ON dmarc_reports(date_end)`,
+      `CREATE INDEX IF NOT EXISTS idx_reports_domain_end ON dmarc_reports(domain, date_end)`,
+      // When a location lookup last ran (successful or not), so failures are not retried on every sync.
+      `ALTER TABLE ip_enrichment ADD COLUMN loc_tried_at INTEGER`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;
@@ -190,7 +201,7 @@ export function ensureSchema(db: D1Database): Promise<void> {
   return ready;
 }
 
-async function applyMigrations(db: D1Database): Promise<void> {
+export async function applyMigrations(db: D1Database): Promise<void> {
   await db
     .prepare(
       `CREATE TABLE IF NOT EXISTS schema_migrations (

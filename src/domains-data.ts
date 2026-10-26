@@ -3,7 +3,7 @@
 // is a few hundred KB of rows, and it lets us sort on derived values (risk,
 // readiness) that SQL pagination can't.
 
-import { domainFilter, sinceEpoch, type Filters, type ListState } from "./filters";
+import { domainFilter, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
 import { getLastSync } from "./app-settings";
 import type { Chrome } from "./shared-ui";
 
@@ -57,7 +57,7 @@ export async function loadDomains(
         `SELECT r.domain AS domain, SUM(r.count) AS total,
                 SUM(CASE WHEN ${PASS} THEN r.count ELSE 0 END) AS passed,
                 COUNT(DISTINCT r.source_ip) AS sources
-           FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?${rc.sql} GROUP BY r.domain`,
+           FROM dmarc_records r${recordsByDate(f)} WHERE r.date_begin >= ? AND r.date_begin < ?${rc.sql} GROUP BY r.domain`,
       )
       .bind(since, now + DAY, ...rc.params)
       .all<{ domain: string; total: number; passed: number; sources: number }>(),

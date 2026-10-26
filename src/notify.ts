@@ -561,7 +561,7 @@ interface DigestData {
   senders: Alert[];
 }
 
-async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: number): Promise<DigestData> {
+export async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: number): Promise<DigestData> {
   const days = digestPeriodDays(cfg.digest);
   const end = now - (now % DAY);
   const start = end - days * DAY;
@@ -675,7 +675,7 @@ interface Collected {
   recovered: boolean;
 }
 
-async function collectAlerts(
+export async function collectAlerts(
   env: NotifyEnv,
   cfg: NotifyConfig,
   opts: { cursor: number; now: number; lookbackSince: number },

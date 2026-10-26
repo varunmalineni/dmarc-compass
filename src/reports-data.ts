@@ -13,6 +13,11 @@ const SORTS: Record<string, string> = {
 };
 export const REPORT_SORT_KEYS = Object.keys(SORTS);
 
+const RECORD_COUNT = "(SELECT COUNT(*) FROM dmarc_records x WHERE x.report_hash = rep.hash)";
+const flagged = (col: string) => `(EXISTS (SELECT 1 FROM dmarc_records x WHERE x.report_hash = rep.hash AND x.${col} IS NOT NULL AND x.${col} != 'pass'))`;
+export const FLAGGED_DKIM = flagged("policy_dkim");
+export const FLAGGED_SPF = flagged("policy_spf");
+
 export interface ReportListItem {
   hash: string;
   reportId: string;
@@ -35,24 +40,27 @@ export async function loadReportsList(
   const dc = domainFilter("rep.domain", f);
   const q = list.q ? likePattern(list.q) : null;
   const searchSql = q ? " AND (rep.report_id LIKE ? ESCAPE '\\' OR rep.org_name LIKE ? ESCAPE '\\')" : "";
-  const having =
-    filter === "dkim" ? " HAVING flagged_dkim = 1" : filter === "spf" ? " HAVING flagged_spf = 1" : filter === "any" ? " HAVING (flagged_dkim = 1 OR flagged_spf = 1)" : "";
+  const problem =
+    filter === "dkim" ? ` AND ${FLAGGED_DKIM}` : filter === "spf" ? ` AND ${FLAGGED_SPF}` : filter === "any" ? ` AND (${FLAGGED_DKIM} OR ${FLAGGED_SPF})` : "";
 
-  const base = `FROM dmarc_reports rep LEFT JOIN dmarc_records rec ON rec.report_hash = rep.hash
-     WHERE rep.date_end >= ?${dc.sql}${searchSql}
-     GROUP BY rep.hash${having}`;
+  const where = `WHERE rep.date_end >= ?${dc.sql}${searchSql}${problem}`;
   const params = [since, ...dc.params, ...(q ? [q, q] : [])];
   const order = SORTS[list.sort] ?? SORTS.date;
   const dir = list.dir === "asc" ? "ASC" : "DESC";
+  // Pick the page of reports first (by date_end index), then count records for those 25 only.
+  // Sorting by record count is the one case that has to count records for every report in range.
+  const inner = list.sort === "records" ? `, ${RECORD_COUNT} AS records` : "";
 
   const [rows, count] = await Promise.all([
     db
       .prepare(
         `SELECT rep.hash, rep.report_id, rep.org_name, rep.domain, rep.date_begin, rep.date_end,
-                COUNT(rec.id) AS records,
-                MAX(CASE WHEN rec.policy_dkim IS NOT NULL AND rec.policy_dkim != 'pass' THEN 1 ELSE 0 END) AS flagged_dkim,
-                MAX(CASE WHEN rec.policy_spf IS NOT NULL AND rec.policy_spf != 'pass' THEN 1 ELSE 0 END) AS flagged_spf
-           ${base} ORDER BY ${order} ${dir}, rep.hash LIMIT ? OFFSET ?`,
+                ${list.sort === "records" ? "rep.records" : RECORD_COUNT} AS records,
+                ${FLAGGED_DKIM} AS flagged_dkim, ${FLAGGED_SPF} AS flagged_spf
+           FROM (SELECT rep.hash, rep.report_id, rep.org_name, rep.domain, rep.date_begin, rep.date_end${inner}
+                   FROM dmarc_reports rep ${where}
+                  ORDER BY ${order} ${dir}, rep.hash LIMIT ? OFFSET ?) rep
+          ORDER BY ${order} ${dir}, rep.hash`,
       )
       .bind(...params, REPORTS_PAGE_SIZE, (list.page - 1) * REPORTS_PAGE_SIZE)
       .all<{
@@ -67,12 +75,7 @@ export async function loadReportsList(
         flagged_spf: number;
       }>(),
     db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM (SELECT rep.hash,
-            MAX(CASE WHEN rec.policy_dkim IS NOT NULL AND rec.policy_dkim != 'pass' THEN 1 ELSE 0 END) AS flagged_dkim,
-            MAX(CASE WHEN rec.policy_spf IS NOT NULL AND rec.policy_spf != 'pass' THEN 1 ELSE 0 END) AS flagged_spf
-            ${base})`,
-      )
+      .prepare(`SELECT COUNT(*) AS n FROM dmarc_reports rep ${where}`)
       .bind(...params)
       .first<{ n: number }>(),
   ]);

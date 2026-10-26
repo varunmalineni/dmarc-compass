@@ -47,3 +47,8 @@ export async function getTickGap(db: D1Database): Promise<number | null> {
     return null;
   }
 }
+
+/** Set while a large import or a walk through old history is unfinished: the next
+ * wake-up syncs again instead of waiting for the interval. */
+export const hasBacklog = async (db: D1Database) => (await getAppSetting(db, "sync_backlog")) === "1";
+export const setBacklog = (db: D1Database, on: boolean) => setAppSetting(db, "sync_backlog", on ? "1" : "0");

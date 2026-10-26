@@ -21,7 +21,7 @@ export interface RotationDeps<M extends RotationMailbox> {
   /** Makes the container read this mailbox and waits for the first read to finish. */
   load(m: M): Promise<LoadResult>;
   /** Copies the loaded mailbox's reports into the database. */
-  sync(m: M): Promise<{ newReports: number; newTlsReports: number }>;
+  sync(m: M): Promise<{ newReports: number; newTlsReports: number; backlog?: boolean }>;
   /** Records the outcome for the admin page. */
   record(m: M, outcome: { ok: boolean; at: number; detail: string }): Promise<void>;
 }
@@ -32,6 +32,8 @@ export interface MailboxOutcome {
   ok: boolean;
   newReports: number;
   newTlsReports: number;
+  /** More of this mailbox is waiting to be copied: sync again without waiting for the interval. */
+  backlog?: boolean;
   error?: string;
 }
 
@@ -74,7 +76,7 @@ export async function runRotation<M extends RotationMailbox>(
         outcome = { id: m.id, name: m.name, ok: false, newReports: 0, newTlsReports: 0, error: loaded.error };
       } else {
         const r = await deps.sync(m);
-        outcome = { id: m.id, name: m.name, ok: true, newReports: r.newReports, newTlsReports: r.newTlsReports };
+        outcome = { id: m.id, name: m.name, ok: true, newReports: r.newReports, newTlsReports: r.newTlsReports, backlog: !!r.backlog };
       }
     } catch (err) {
       outcome = {
@@ -114,6 +116,6 @@ export function summarize(outcomes: MailboxOutcome[], partial: boolean): { ok: b
   if (outcomes.length === 1 && failed.length === 0) return { ok: true, text: base };
   const scope = outcomes.length > 1 ? ` across ${outcomes.length - failed.length} of ${outcomes.length} mailboxes` : "";
   const bad = failed.length ? `; failed: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}` : "";
-  const more = partial ? "; the rest continue on the next run" : "";
+  const more = partial ? "; the rest continue on the next run" : outcomes.some((o) => o.backlog) ? "; more history is still being imported" : "";
   return { ok: failed.length === 0, text: (base + scope + bad + more).slice(0, 200) };
 }

@@ -2,8 +2,9 @@
 // filters (domains, time range, search) the page was showing.
 
 import { csvRow, CSV_BOM, isoDate, slug } from "./csv";
-import { domainFilter, likePattern, rangeLabel, sinceEpoch, type Filters, type ListState } from "./filters";
+import { domainFilter, likePattern, rangeLabel, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
 import { loadDomains } from "./domains-data";
+import { FLAGGED_DKIM, FLAGGED_SPF } from "./reports-data";
 
 /** A hard ceiling so one request cannot exhaust the Worker's memory. */
 export const EXPORT_MAX_ROWS = 100_000;
@@ -69,7 +70,7 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
                 SUM(CASE WHEN ${PASS("r")} THEN r.count ELSE 0 END) AS passed, MAX(r.date_begin) AS last_seen,
                 MAX(${BAD("r.policy_dkim")}) AS i_dkim_policy, MAX(${BAD("r.policy_spf")}) AS i_spf_policy,
                 MAX(${BAD("r.auth_dkim_result")}) AS i_dkim_auth, MAX(${BAD("r.auth_spf_result")}) AS i_spf_auth
-           FROM dmarc_records r LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
+           FROM dmarc_records r${recordsByDate(f)} LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
           WHERE r.date_begin >= ?${dc.sql}${search}
           GROUP BY r.source_ip
           ORDER BY (SUM(r.count) - SUM(CASE WHEN ${PASS("r")} THEN r.count ELSE 0 END)) DESC, SUM(r.count) DESC, r.source_ip
@@ -93,19 +94,22 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
     const dc = domainFilter("rep.domain", f);
     const q = o.q ? likePattern(o.q) : null;
     const search = q ? " AND (rep.report_id LIKE ? ESCAPE '\\' OR rep.org_name LIKE ? ESCAPE '\\')" : "";
-    const having =
-      o.problem === "dkim" ? " HAVING flagged_dkim = 1" : o.problem === "spf" ? " HAVING flagged_spf = 1" : o.problem === "any" ? " HAVING (flagged_dkim = 1 OR flagged_spf = 1)" : "";
+    const problem =
+      o.problem === "dkim" ? ` AND ${FLAGGED_DKIM}` : o.problem === "spf" ? ` AND ${FLAGGED_SPF}` : o.problem === "any" ? ` AND (${FLAGGED_DKIM} OR ${FLAGGED_SPF})` : "";
+    // Choose the newest reports first (date_end index), then aggregate records for those only.
     const res = await db
       .prepare(
         `SELECT rep.report_id, rep.org_name, rep.domain, rep.date_begin, rep.date_end, rep.policy_p, rep.policy_pct, rep.mailbox_id,
                 COUNT(rec.id) AS records, COALESCE(SUM(rec.count), 0) AS messages,
                 COALESCE(SUM(CASE WHEN ${PASS("rec")} THEN 0 ELSE rec.count END), 0) AS failing,
                 MAX(${BAD("rec.policy_dkim")}) AS flagged_dkim, MAX(${BAD("rec.policy_spf")}) AS flagged_spf
-           FROM dmarc_reports rep LEFT JOIN dmarc_records rec ON rec.report_hash = rep.hash
-          WHERE rep.date_end >= ?${dc.sql}${search}
-          GROUP BY rep.hash${having}
-          ORDER BY rep.date_end DESC, rep.hash
-          LIMIT ${EXPORT_MAX_ROWS + 1}`,
+           FROM (SELECT * FROM dmarc_reports rep
+                  WHERE rep.date_end >= ?${dc.sql}${search}${problem}
+                  ORDER BY rep.date_end DESC, rep.hash
+                  LIMIT ${EXPORT_MAX_ROWS + 1}) rep
+           LEFT JOIN dmarc_records rec ON rec.report_hash = rep.hash
+          GROUP BY rep.hash
+          ORDER BY rep.date_end DESC, rep.hash`,
       )
       .bind(since, ...dc.params, ...(q ? [q, q] : []))
       .all<{ report_id: string; org_name: string; domain: string; date_begin: number; date_end: number; policy_p: string | null; policy_pct: number | null; mailbox_id: string | null; records: number; messages: number; failing: number; flagged_dkim: number; flagged_spf: number }>();

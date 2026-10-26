@@ -20,6 +20,31 @@ class Stmt {
   }
 }
 
+function wrap(raw: DatabaseSync) {
+  const db = {
+    prepare: (sql: string) => new Stmt(raw, sql),
+    async batch(stmts: Stmt[]) {
+      raw.exec("BEGIN");
+      try {
+        const out = [];
+        for (const s of stmts) out.push(await s.run());
+        raw.exec("COMMIT");
+        return out;
+      } catch (e) {
+        raw.exec("ROLLBACK");
+        throw e;
+      }
+    },
+    raw,
+  };
+  return db as unknown as D1Database & { raw: DatabaseSync };
+}
+
+/** An empty database: the real schema comes from ensureSchema(). */
+export function makeBareDb() {
+  return wrap(new DatabaseSync(":memory:"));
+}
+
 export function makeDb() {
   const raw = new DatabaseSync(":memory:");
   raw.exec(`
@@ -27,12 +52,7 @@ export function makeDb() {
     CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE dmarc_reports (hash TEXT PRIMARY KEY, mailbox_id TEXT);
   `);
-  const db = {
-    prepare: (sql: string) => new Stmt(raw, sql),
-    async batch(stmts: Stmt[]) { return Promise.all(stmts.map((s) => s.run())); },
-    raw,
-  };
-  return db as unknown as D1Database & { raw: DatabaseSync };
+  return wrap(raw);
 }
 
 export const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));

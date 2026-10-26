@@ -2,7 +2,7 @@
 // range); the domain list is passed to SQL as a single JSON parameter so the
 // number of selected domains never hits D1's bound-parameter limit.
 
-import { domainFilter, likePattern, sinceEpoch, type Filters, type ListState } from "./filters";
+import { domainFilter, likePattern, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
 
 const DAY = 86400;
 const ENFORCEMENT_DAYS = 30;
@@ -85,7 +85,7 @@ async function windowTotals(db: D1Database, f: Filters, from: number, to: number
               COUNT(DISTINCT r.source_ip) AS sources,
               COUNT(DISTINCT r.domain) AS domains,
               MIN(r.date_begin) AS first_at
-         FROM dmarc_records r
+         FROM dmarc_records r${recordsByDate(f)}
         WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql}`,
     )
     .bind(from, to, ...dc.params)
@@ -137,12 +137,13 @@ export async function loadOverview(
   const days = dayStrings(trendStart, now);
 
   // sources list: shared FROM/WHERE so the page query and the count agree
+  const IDX = recordsByDate(f);
   const q = list.q ? likePattern(list.q) : null;
   const searchSql = q
     ? " AND (r.source_ip LIKE ? ESCAPE '\\' OR e.esp_name LIKE ? ESCAPE '\\' OR e.ptr_hostname LIKE ? ESCAPE '\\')"
     : "";
   const searchParams = q ? [q, q, q] : [];
-  const sourcesFrom = `FROM dmarc_records r LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
+  const sourcesFrom = `FROM dmarc_records r${IDX} LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
         WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql}${searchSql}`;
   const sourcesParams = [since, to, ...dc.params, ...searchParams];
   const orderBy = SOURCE_SORTS[list.sort] ?? SOURCE_SORTS.risk;
@@ -157,7 +158,7 @@ export async function loadOverview(
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM (
-             SELECT r.source_ip FROM dmarc_records r
+             SELECT r.source_ip FROM dmarc_records r${IDX}
               WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql}
               GROUP BY r.source_ip HAVING ${FAILED} > 0)`,
         )
@@ -173,14 +174,14 @@ export async function loadOverview(
       db
         .prepare(
           `SELECT date(r.date_begin, 'unixepoch') AS day, ${PASSED} AS passed, ${FAILED} AS failed
-             FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql} GROUP BY day`,
+             FROM dmarc_records r${IDX} WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql} GROUP BY day`,
         )
         .bind(since, to, ...dc.params)
         .all<{ day: string; passed: number; failed: number }>(),
       db
         .prepare(
           `SELECT date(r.date_begin, 'unixepoch') AS day, COALESCE(e.esp_name, 'Unknown') AS esp, SUM(r.count) AS total
-             FROM dmarc_records r LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
+             FROM dmarc_records r${IDX} LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
             WHERE r.date_begin >= ? AND r.date_begin < ?${dc.sql} GROUP BY day, esp`,
         )
         .bind(since, to, ...dc.params)
@@ -221,7 +222,7 @@ export async function loadOverview(
       db
         .prepare(
           `SELECT r.domain AS domain, SUM(r.count) AS total, ${FAILED} AS failing
-             FROM dmarc_records r WHERE r.date_begin >= ?${enfDc.sql} GROUP BY r.domain`,
+             FROM dmarc_records r${IDX} WHERE r.date_begin >= ?${enfDc.sql} GROUP BY r.domain`,
         )
         .bind(enfSince, ...enfDc.params)
         .all<{ domain: string; total: number; failing: number }>(),
@@ -240,7 +241,7 @@ export async function loadOverview(
         .prepare(
           `SELECT r.source_ip AS ip, COALESCE(e.esp_name, 'Unknown') AS esp, ${FAILED} AS failing,
                   SUM(r.count) AS total, COUNT(DISTINCT r.domain) AS domains
-             FROM dmarc_records r LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
+             FROM dmarc_records r${IDX} LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
             WHERE r.date_begin >= ?${enfDc.sql}
             GROUP BY r.source_ip HAVING ${FAILED} > 0
             ORDER BY failing DESC LIMIT 6`,
