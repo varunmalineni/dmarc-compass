@@ -11,15 +11,23 @@ An example `Ingress` is in `ingress.example.yaml`.
 
 ## Install
 
-1. **Build and push the image** to a registry your cluster can pull from, and point the manifests at it.
-   (Docker Desktop, OrbStack and minikube with its Docker can use a local image as is.)
+1. **Choose the image** and point the manifests at it, by editing the `images:` block at the end of `deploy/kubernetes/kustomization.yaml`.
+
+   **Use the published image** (x86-64 and ARM64; see [the tags](../../docs/self-hosting.md#the-published-image)). Nothing to build:
+
+   ```yaml
+   images:
+     - name: dmarc-compass
+       newName: ghcr.io/<owner>/dmarc-compass
+       newTag: "0.1.0"
+   ```
+
+   **Or build your own** and push it to a registry your cluster can pull from. (Docker Desktop, OrbStack and minikube with its Docker can use a local image as is.)
 
    ```sh
    docker build -f deploy/docker/Dockerfile -t registry.example.com/dmarc-compass:1.0 .
    docker push registry.example.com/dmarc-compass:1.0
    ```
-
-   Then edit the `images:` block at the end of `deploy/kubernetes/kustomization.yaml`:
 
    ```yaml
    images:
@@ -102,7 +110,7 @@ kubectl -n dmarc-compass exec deploy/dmarc-compass -- node dist/server.mjs --res
   (`kubectl cp` needs `tar` in the container, which the image has.) To restore, scale to zero, put the file back
   as `dmarc-compass.db` on the volume (delete `-wal` and `-shm` beside it) and scale back to one. Volume snapshots
   also work if your storage supports them.
-- **Upgrading.** Build and push a new tag, change `newTag` in `kustomization.yaml`, and run `kubectl apply -k deploy/kubernetes`. Tables are upgraded
+- **Upgrading.** Change `newTag` in `kustomization.yaml` to the new release (or build and push a new tag of your own), and run `kubectl apply -k deploy/kubernetes`. Tables are upgraded
   automatically when the new pod starts, and the volume is kept.
 - **Troubleshooting.** `CreateContainerConfigError` means the secret is missing. If the pod restarts in a loop, run
   `kubectl -n dmarc-compass logs deploy/dmarc-compass`: a missing or too-short setting is named there.

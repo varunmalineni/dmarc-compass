@@ -64,3 +64,41 @@ test("the test overlay's key and password are the ones the test scripts use", as
   const password = lib.match(/PASSWORD = "([^"]+)"/)?.[1];
   assert.ok(password && overlay.includes(`ADMIN_PASSWORD=${password}`));
 });
+
+// ------------------------------------------------------------ image workflow
+
+test("the image workflow tests the pushed digest before it tags anything, and hard-codes no owner", () => {
+  const w = read(".github/workflows/image.yml");
+  assert.match(w, /platforms: linux\/amd64,linux\/arm64/, "both architectures");
+  assert.match(w, /push-by-digest=true/, "the build is pushed without a tag first");
+  assert.match(w, /provenance: mode=max/);
+  assert.match(w, /sbom: true/);
+  assert.match(w, /publish:\n\s+needs: \[build, test-docker, test-arm64, test-kubernetes\]/, "tags are added only after every test");
+  assert.match(w, /ghcr\.io\/\$\{GITHUB_REPOSITORY,,\}/, "the name comes from the repository, in lower case");
+  assert.ok(!/ghcr\.io\/[a-z0-9-]+\//i.test(w.replace(/ghcr\.io\/\$\{GITHUB_REPOSITORY,,\}/g, "")), "no registry owner written into the workflow");
+  assert.match(w, /package\.json says version/, "a tag must match package.json");
+  assert.match(w, /\[ "\$INPUT_TAG" = "latest" \]/, "a manual run cannot take over latest");
+  assert.match(w, /^permissions:\n\s+contents: read/m, "read-only by default");
+});
+
+test("the permissions are no wider than each job needs", () => {
+  const w = read(".github/workflows/image.yml");
+  const body = w.slice(w.indexOf("\njobs:\n"));
+  const starts = [...body.matchAll(/^  ([a-z0-9-]+):$/gm)];
+  const grants = (name: string) => {
+    const i = starts.findIndex((m) => m[1] === name);
+    const text = body.slice(starts[i].index!, starts[i + 1]?.index ?? body.length);
+    const block = text.match(/    permissions:\n((?:      [a-z-]+: (?:read|write)\n)+)/)?.[1];
+    return block?.trim().replace(/\s+/g, " ");
+  };
+  assert.equal(grants("build"), "contents: read packages: write");
+  for (const t of ["test-docker", "test-arm64", "test-kubernetes"]) assert.equal(grants(t), "contents: read packages: read", t);
+  assert.equal(grants("publish"), "contents: write packages: write");
+});
+
+test("Compose builds by default and takes the published image from one setting", () => {
+  const compose = read("compose.yaml");
+  assert.match(compose, /image: \$\{DMARC_COMPASS_IMAGE:-dmarc-compass:local\}/);
+  assert.match(compose, /build:\n\s+context: \./);
+  assert.match(read(".env.example"), /^# DMARC_COMPASS_IMAGE=/m);
+});

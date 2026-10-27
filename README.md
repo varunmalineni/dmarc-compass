@@ -66,7 +66,7 @@ You need a **mailbox with IMAP** that receives your `rua=` reports (set-up notes
 | **Data is kept in** | D1, managed by Cloudflare | A SQLite file in a Docker volume | A SQLite file on a persistent volume |
 | **Backups** | Cloudflare keeps 30 days of point-in-time restore | You back up the file (one command) | You back up the file (one command) |
 | **HTTPS** | Provided | Your reverse proxy (a Caddy example is included) | Your ingress |
-| **Upgrade** | `git pull && npm install && npm run deploy` | `git pull && docker compose up -d --build` | Push a new image tag, `kubectl apply -k` |
+| **Upgrade** | `git pull && npm install && npm run deploy` | Change the image tag, `docker compose pull && docker compose up -d` | Change the image tag, `kubectl apply -k` |
 
 It is the same app everywhere: the dashboards, alerts, digest, exports, sign-in and settings are identical.
 
@@ -90,13 +90,13 @@ cp .env.example .env        # then edit it: ADMIN_PASSWORD and CONFIG_ENCRYPTION
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080>, sign in, add your mailbox under **Admin → Mailboxes** and click **Run sync now**. There is no default password; Compose stops and says which value is missing. Every setting, HTTPS with Caddy, backups and upgrading: **[Docker guide](docs/self-hosting.md)**.
+Open <http://localhost:8080>, sign in, add your mailbox under **Admin → Mailboxes** and click **Run sync now**. There is no default password; Compose stops and says which value is missing. To skip the build, use the [published image](docs/self-hosting.md#the-published-image) (x86-64 and ARM64) by setting `DMARC_COMPASS_IMAGE` in `.env`, then `docker compose pull && docker compose up -d`. Every setting, HTTPS with Caddy, backups and upgrading: **[Docker guide](docs/self-hosting.md)**.
 
 ### Kubernetes
 
 ```bash
-docker build -f deploy/docker/Dockerfile -t registry.example.com/dmarc-compass:1.0 . && docker push registry.example.com/dmarc-compass:1.0
-# set newName and newTag under "images:" in deploy/kubernetes/kustomization.yaml, then:
+# set newName and newTag under "images:" in deploy/kubernetes/kustomization.yaml
+# (the published image, ghcr.io/<owner>/dmarc-compass, or one you built), then:
 kubectl apply -f deploy/kubernetes/namespace.yaml
 kubectl -n dmarc-compass create secret generic dmarc-compass-secrets \
   --from-literal=ADMIN_USER=admin --from-literal=ADMIN_PASSWORD='choose-a-long-password' \
@@ -143,7 +143,7 @@ The pod runs as a single replica, as a non-root user with a read-only filesystem
 | **Use it** | [Using the dashboard](docs/using-the-dashboard.md) (pages, sync schedule, several mailboxes, exports) · [Tags and filters](docs/tags-and-filters.md) · [Notifications](docs/notifications.md) (Slack, signed JSON webhooks, per-webhook filters) |
 | **Run it** | [Operating it](docs/operating.md) (logs, updates, backups, uninstall) · [Scale](docs/scale.md) (measured timings) |
 | **Understand it** | [How it works](docs/how-it-works.md) · [Security model](docs/security.md) · [Limitations](docs/limitations.md) |
-| **Contribute** | [Contributing](CONTRIBUTING.md) · [Reporting a vulnerability](SECURITY.md) |
+| **Contribute** | [Contributing](CONTRIBUTING.md) · [Releasing](docs/releasing.md) · [Reporting a vulnerability](SECURITY.md) |
 
 ## Compared with other options
 
@@ -169,7 +169,7 @@ The main limits, in short:
 
 ## Roadmap
 
-Email delivery and TLS failure alerts · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · a published container image · BIMI readiness check · JSON API.
+Email delivery and TLS failure alerts · enforcement rollout tracking over time (`pct=25 → 100 → reject`) · BIMI readiness check · JSON API.
 
 ## Contributing and security
 

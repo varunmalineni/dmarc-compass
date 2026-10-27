@@ -10,7 +10,9 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile
-    image: dmarc-compass:local
+    # Built from this checkout by default. To use the published image instead, set DMARC_COMPASS_IMAGE in .env
+    # (see docs/self-hosting.md) and run `docker compose pull` before `docker compose up -d`.
+    image: ${DMARC_COMPASS_IMAGE:-dmarc-compass:local}
     restart: unless-stopped
     ports:
       # Only this computer can reach it. To serve other machines, put a reverse proxy with HTTPS

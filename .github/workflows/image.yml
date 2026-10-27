@@ -1,0 +1,261 @@
+# Builds the self-hosted image (deploy/docker/Dockerfile) for x86-64 and ARM64, tests the exact
+# artifact that was pushed, and only then gives it its tags.
+#
+#   v1.2.3 tag        ->  1.2.3, 1.2 and latest (a tag with a dash, such as v1.2.3-rc.1, only gets its own name),
+#                         plus a GitHub release
+#   push to main      ->  edge
+#   manual run        ->  the tag you type, for trying the workflow out (never "latest")
+#
+# The image is pushed first without a tag (by digest). The Docker and Kubernetes end-to-end tests
+# then run on that digest, and the tags are added only if both pass, so a broken build can never be
+# what "latest" points at. The name is computed from the repository, so a fork publishes to its own
+# registry namespace.
+name: Image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, for trying the workflow out (for example 0.0.0-test)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Work out the image name and check the request
+        id: vars
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if ! printf '%s' "$INPUT_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$' || [ "$INPUT_TAG" = "latest" ] || [ "$INPUT_TAG" = "edge" ]; then
+              echo "::error::The tag must be letters, digits, dots, dashes or underscores (at most 64), and not latest or edge."
+              exit 1
+            fi
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version=$(node -p "require('./package.json').version")
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::The tag is $GITHUB_REF_NAME but package.json says version $version. Change one so they agree."
+              exit 1
+            fi
+          fi
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=dmarc-compass
+            org.opencontainers.image.description=DMARC and TLS-RPT reporting that you run yourself
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push by digest
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          labels: ${{ steps.meta.outputs.labels }}
+          # No tag yet: the digest is what gets tested and then tagged.
+          outputs: type=image,name=${{ steps.vars.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          # Build provenance and a software bill of materials, attached to the image.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  test-docker:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: End-to-end test of the pushed image (x86-64)
+        run: |
+          docker pull "$REF"
+          docker tag "$REF" dmarc-compass:e2e
+          node scripts/e2e/docker.mjs --no-build
+
+  # The ARM64 half of the image has to start too. It runs under emulation here, so this only shows that it
+  # starts and answers; the full end-to-end test above is the x86-64 one.
+  test-arm64:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
+    steps:
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the ARM64 image
+        run: |
+          docker pull --platform linux/arm64 "$REF"
+          docker run -d --name arm --platform linux/arm64 -p 8080:8080 \
+            -e ADMIN_USER=admin -e ADMIN_PASSWORD=arm64-smoke-test-1 \
+            -e "CONFIG_ENCRYPTION_KEY=$(openssl rand -base64 32)" "$REF"
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            sleep 3
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          arch=$(docker exec arm uname -m)
+          echo "architecture inside the container: $arch"
+          [ "$arch" = "aarch64" ]
+          docker exec arm /usr/local/bin/dmarc-report-viewer --version
+      - if: failure()
+        run: docker logs arm || true
+
+  test-kubernetes:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REF: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create a cluster
+        run: |
+          command -v kind >/dev/null || {
+            curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+            chmod +x kind && sudo mv kind /usr/local/bin/kind
+          }
+          kind create cluster --name e2e --wait 120s
+      - name: End-to-end test of the pushed image on the manifests
+        run: |
+          docker pull "$REF"
+          docker tag "$REF" dmarc-compass:e2e
+          npm run e2e:k8s -- --no-build --kind e2e
+
+  publish:
+    needs: [build, test-docker, test-arm64, test-kubernetes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.build.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=edge,branch=main
+            type=raw,value=${{ inputs.tag || 'unused' }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Give the tested image its tags
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          args=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $args "$IMAGE@$DIGEST"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+          {
+            echo "### Published"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            jq -r '.tags[] | "- `" + . + "`"' <<< "$DOCKER_METADATA_OUTPUT_JSON"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          flag=""
+          case "$GITHUB_REF_NAME" in *-*) flag="--prerelease" ;; esac
+          cat > notes.md <<EOF
+          ## Container image
+
+          \`\`\`
+          docker pull $IMAGE:$version
+          \`\`\`
+
+          Pin it exactly with the digest: \`$IMAGE@$DIGEST\`. The image is built for x86-64 and ARM64 and carries build provenance and a software bill of materials.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --notes-file notes.md $flag

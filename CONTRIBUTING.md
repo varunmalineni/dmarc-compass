@@ -37,6 +37,10 @@ Before you open a pull request, run `npm run typecheck` and `npm test`. Changes 
 - **Documentation moves with the code.** If a setting, page or command changes, update the page in `docs/` that describes it. `npm test` checks that links between the documents point at files and headings that exist.
 - Test imports use explicit `.ts` extensions in files that unit tests load, because the tests run with Node's built-in TypeScript support.
 
+## Releases
+
+Maintainers cut a release by tagging; the workflow builds, tests and publishes the container image. See [Releasing](docs/releasing.md).
+
 ## Reporting a problem
 
 Open an issue and choose the bug report form. Please remove mailbox passwords, webhook URLs and encryption keys from anything you paste. If you think you have found a security problem, do not open an issue; follow [SECURITY.md](SECURITY.md).

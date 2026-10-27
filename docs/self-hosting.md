@@ -6,7 +6,7 @@ For Kubernetes see [deploy/kubernetes](../deploy/kubernetes/README.md). For Clou
 
 The container holds the app and the unmodified upstream parser. The app starts **one parser per mailbox**, side by
 side, and keeps its data in a SQLite file in a volume. The dashboards, alerts, sign-in and settings are the same code
-as on Cloudflare. You need Docker (Compose v2 for the Compose file). The image is built for x86-64 and ARM64.
+as on Cloudflare. You need Docker (Compose v2 for the Compose file). The image is built for x86-64 and ARM64, and is published ready to use (see [The published image](#the-published-image)) or can be built from this repository.
 
 You need three settings to start: an admin user, an admin password (at least 10 characters), and an encryption key.
 There is deliberately no default password.
@@ -25,16 +25,47 @@ Open <http://localhost:8080>. In `.env` you must set:
 | `ADMIN_USER`, `ADMIN_PASSWORD` | The sign-in. At least 10 characters; there is no default password. |
 | `CONFIG_ENCRYPTION_KEY` | Encrypts mailbox passwords in the database. Create one with `openssl rand -base64 32` and keep a copy: without it, saved mailbox passwords cannot be read. |
 
+`docker compose up -d --build` builds the image from this checkout. To use the [published image](#the-published-image) instead, skip the build: set `DMARC_COMPASS_IMAGE` in `.env` and run `docker compose pull && docker compose up -d`.
+
 If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, as described in the [README](../README.md#docker).
+
+## The published image
+
+Each release is published to GitHub's container registry as `ghcr.io/<owner>/dmarc-compass`, built for **x86-64 and ARM64**, with build provenance and a software bill of materials attached.
+
+| Tag | What it is | Use it for |
+|---|---|---|
+| `0.1.0` | That exact release. Never changes. | Anything you rely on. |
+| `0.1` | The newest `0.1.x` release. | Getting fixes without a new feature release. |
+| `latest` | The newest release. | A first try. |
+| `edge` | The newest commit on the main branch, which may not be released. | Testing what is coming. |
+
+For Compose, set the image in `.env`, then pull and start:
+
+```sh
+# .env
+DMARC_COMPASS_IMAGE=ghcr.io/<owner>/dmarc-compass:0.1.0
+```
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+To **upgrade**, change the tag, and run the same two commands. The data volume is kept, and tables are upgraded automatically when the new version starts.
+
+To pin an image exactly, use its digest: `ghcr.io/<owner>/dmarc-compass@sha256:...`. Each release's page lists it. You can see what a tag points at, and the attached build provenance, with `docker buildx imagetools inspect ghcr.io/<owner>/dmarc-compass:0.1.0`.
+
+Before a release gets its tags, the exact image is tested: the Docker and Kubernetes end-to-end tests run on it, and the ARM64 half is started. If either fails, no tag moves.
 
 ## Plain `docker run`
 
 ```sh
-docker build -f deploy/docker/Dockerfile -t dmarc-compass .
 docker run -d --name dmarc-compass -p 127.0.0.1:8080:8080 -v dmarc-data:/data \
   -e ADMIN_USER=admin -e ADMIN_PASSWORD='choose-a-long-password' \
-  -e CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)" dmarc-compass
+  -e CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)" ghcr.io/<owner>/dmarc-compass:0.1.0
 ```
+
+To build it yourself instead: `docker build -f deploy/docker/Dockerfile -t dmarc-compass .` and use `dmarc-compass` as the image name.
 
 (Save the key you generate; this one-liner does not show it again.)
 
