@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dmarc-compass
+  labels:
+    app.kubernetes.io/name: dmarc-compass
+spec:
+  # One pod only. The database is a SQLite file and syncs take a lock, so more replicas would
+  # not share work, they would fight. "Recreate" stops the old pod before starting the new one,
+  # so two never open the volume at once during an upgrade.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dmarc-compass
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dmarc-compass
+    spec:
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dmarc-compass
+          image: dmarc-compass
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: dmarc-compass-config
+            # Must contain ADMIN_USER, ADMIN_PASSWORD and CONFIG_ENCRYPTION_KEY (see README.md).
+            # SLACK_WEBHOOK_URL may be added to it.
+            - secretRef:
+                name: dmarc-compass-secrets
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Each parser holds its mailbox in memory. Raise this for large mailboxes or many of them.
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: dmarc-compass-data
+        - name: tmp
+          emptyDir: {}

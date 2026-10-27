@@ -1,0 +1,25 @@
+# dmarc-compass on Kubernetes. See README.md in this folder.
+#   kubectl apply -k deploy/kubernetes        (after creating the secret)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dmarc-compass
+
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+
+# Settings that are not secret. Edit config.env; a change restarts the pod.
+configMapGenerator:
+  - name: dmarc-compass-config
+    envs:
+      - config.env
+
+# Point this at the image you built and pushed to your registry:
+#   kustomize edit set image dmarc-compass=registry.example.com/dmarc-compass:1.0
+images:
+  - name: dmarc-compass
+    newName: dmarc-compass
+    newTag: local

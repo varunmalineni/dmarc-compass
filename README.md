@@ -8,7 +8,7 @@
 
 Point your domains' `rua=` addresses at one or more mailboxes and see who is sending as you,<br>what is failing, and whether you are ready to move from `p=none` to `p=reject`.
 
-[Quick start](#quick-start) &nbsp;·&nbsp; [Run it yourself](#run-it-yourself-docker-a-vm) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
+[Quick start](#quick-start) &nbsp;·&nbsp; [Run it yourself](#run-it-yourself-docker-kubernetes-a-vm) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
 
 <br>
 
@@ -161,9 +161,9 @@ Things that follow from it:
 - Each sync waits for the parser to finish reading before copying reports, so a container that slept between syncs and woke up empty is handled. If a mailbox never finishes (wrong login or folder), the sync reports a timeout and the *Sync problem* alert fires, instead of quietly syncing nothing.
 - If you deployed an earlier version, its cron fired every 15 minutes. Intervals shorter than that need `"crons": ["*/5 * * * *"]` in your wrangler config and a redeploy; Admin shows a warning if the deployed schedule is slower than the interval you chose.
 
-## Run it yourself (Docker, a VM)
+## Run it yourself (Docker, Kubernetes, a VM)
 
-Cloudflare is the main way to run this, but the same app also runs as a single container on any machine with Docker. It keeps its data in a SQLite file and starts **one parser per mailbox**, side by side (the Cloudflare version shares one parser between mailboxes to keep its cost flat). Dashboards, alerts, sign-in and settings are the same code.
+Cloudflare is the main way to run this, but the same app also runs as a single container on any machine with Docker, on a Linux VM (install Docker and use the Compose file below), and on Kubernetes. It keeps its data in a SQLite file and starts **one parser per mailbox**, side by side (the Cloudflare version shares one parser between mailboxes to keep its cost flat). Dashboards, alerts, sign-in and settings are the same code.
 
 **Docker Compose**
 
@@ -180,6 +180,8 @@ Open <http://localhost:8080>. In `.env` you must set:
 | `CONFIG_ENCRYPTION_KEY` | Encrypts mailbox passwords in the database. Create one with `openssl rand -base64 32` and keep a copy: without it, saved mailbox passwords cannot be read. |
 
 If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, exactly as in the [Quick start](#quick-start).
+
+**Kubernetes.** Plain manifests in [`deploy/kubernetes`](deploy/kubernetes/README.md): a one-replica Deployment that meets the "restricted" Pod Security profile (non-root, read-only filesystem), a volume for the database, a Service, and an example Ingress. Install is `kubectl apply -k deploy/kubernetes` after creating a Secret; the folder's README has the steps, HTTPS, backups and what to watch for. `npm run e2e:k8s` tests it on a real cluster.
 
 **Plain `docker run`**
 
@@ -221,7 +223,7 @@ Keep your `CONFIG_ENCRYPTION_KEY` with the backup: without it the saved mailbox 
 
 **Memory.** Each parser holds its mailbox in memory, so memory grows with the number and size of mailboxes. The Compose file caps the container at 1 GB; raise `mem_limit` for large ones. A long query (the year or all-time Overview of a very large fleet) holds up other requests while it runs, which is fine for one admin or a few users.
 
-**What the Docker version tests.** `npm run e2e:docker` builds the image, starts a real IMAP test server (GreenMail), fills a mailbox with synthetic reports and drives the app over HTTP: sign-in, adding the mailbox, syncing through the real parser, exports, restarting, and checking that nothing is lost.
+**What the self-hosted versions test.** `npm run e2e:docker` and `npm run e2e:k8s` build the image, starts a real IMAP test server (GreenMail), fills a mailbox with synthetic reports and drives the app over HTTP: sign-in, adding the mailbox, syncing through the real parser, exports, restarting, and checking that nothing is lost. The Kubernetes one also replaces the pod and checks the volume keeps the data.
 
 ## Scale
 

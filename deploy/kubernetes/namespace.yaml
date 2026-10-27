@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dmarc-compass
+  labels:
+    # The pod meets the "restricted" Pod Security Standard (non-root, no extra privileges, read-only filesystem).
+    pod-security.kubernetes.io/enforce: restricted

@@ -36,3 +36,21 @@ jobs:
         with:
           node-version: 22
       - run: npm run e2e:docker
+
+  # The Kubernetes manifests, on a throwaway kind cluster.
+  kubernetes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Create a cluster
+        run: |
+          command -v kind >/dev/null || {
+            curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+            chmod +x kind && sudo mv kind /usr/local/bin/kind
+          }
+          kind create cluster --name e2e --wait 120s
+      - run: npm run e2e:k8s -- --kind e2e

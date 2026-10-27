@@ -1,0 +1,29 @@
+# An example Ingress. Copy it, edit the host, class and TLS secret, and apply it with kubectl.
+# It is not part of the default install because every cluster's ingress setup differs.
+#
+# Sign-in needs HTTPS. When the Ingress terminates TLS, also set in config.env:
+#   TRUST_PROXY=true
+#   PUBLIC_URL=https://dmarc.example.com
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dmarc-compass
+  namespace: dmarc-compass
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  # ingressClassName: nginx
+  tls:
+    - hosts: [dmarc.example.com]
+      secretName: dmarc-compass-tls
+  rules:
+    - host: dmarc.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dmarc-compass
+                port:
+                  name: http

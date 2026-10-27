@@ -1,0 +1,17 @@
+- op: add
+  path: /spec/template/spec/containers/-
+  value:
+    name: greenmail
+    image: greenmail/standalone:2.1.8
+    env:
+      - name: GREENMAIL_OPTS
+        value: "-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=dmarc:secretpw"
+    ports:
+      - containerPort: 3143
+    resources:
+      limits:
+        memory: 512Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]

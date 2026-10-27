@@ -1,0 +1,11 @@
+# The SQLite database. Use block storage (ReadWriteOnce), not NFS or another network
+# file system: SQLite relies on file locks that those do not reliably provide.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dmarc-compass-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi

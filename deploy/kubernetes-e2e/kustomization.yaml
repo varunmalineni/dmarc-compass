@@ -1,0 +1,34 @@
+# For the end-to-end test only (npm run e2e:k8s): the app plus a throwaway IMAP server
+# in the same pod, a fixed test password, and plain-HTTP sign-in. Never use this to run
+# for real.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dmarc-compass-e2e
+resources:
+  - ../kubernetes
+patches:
+  - path: greenmail.yaml
+    target: { kind: Deployment, name: dmarc-compass }
+  - target: { kind: Namespace }
+    patch: |
+      - op: remove
+        path: /metadata/labels
+configMapGenerator:
+  - name: dmarc-compass-config
+    behavior: merge
+    literals:
+      - ALLOW_INSECURE_HTTP=true
+      - IMAP_TEST_PORT=3143
+      - READ_TIMEOUT_SECONDS=40
+secretGenerator:
+  - name: dmarc-compass-secrets
+    literals:
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=e2e-admin-password-123
+      - CONFIG_ENCRYPTION_KEY=CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=
+generatorOptions:
+  disableNameSuffixHash: true
+images:
+  - name: dmarc-compass
+    newName: dmarc-compass
+    newTag: e2e

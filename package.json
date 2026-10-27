@@ -20,7 +20,8 @@
     "bench": "node scripts/bench.mjs",
     "build:node": "node scripts/build-node.mjs",
     "start:node": "npm run build:node && node dist/server.mjs",
-    "e2e:docker": "node scripts/e2e-docker.mjs"
+    "e2e:docker": "node scripts/e2e/docker.mjs",
+    "e2e:k8s": "node scripts/e2e/kubernetes.mjs"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"
