@@ -12,11 +12,12 @@ import { containerEnv, fingerprint, type Mailbox } from "../mailboxes.ts";
 import { waitUntilRead } from "../mailbox-store.ts";
 import { containerIntervalSeconds } from "../sync-schedule.ts";
 import { getSyncMinutes } from "../sync-settings.ts";
-import { getAdminCreds } from "../config.ts";
+import { internalCredentials } from "../credentials.ts";
 import type { LeaseOptions, LeaseResult, ParserClient, ParserHost } from "../runtime.ts";
 
 export interface PoolEnv {
   DB: D1Database;
+  CONFIG_ENCRYPTION_KEY?: string;
   ADMIN_USER?: string;
   ADMIN_PASSWORD?: string;
   HTTP_SERVER_USER?: string;
@@ -116,7 +117,7 @@ export class ParserPool implements ParserHost {
   }
 
   private async start(mailbox: Mailbox, intervalSeconds: number, fp: string): Promise<Entry> {
-    const creds = getAdminCreds(this.o.env);
+    const creds = await internalCredentials(this.o.env);
     if (!creds) throw new Error("Admin credentials are not configured");
     const port = await freePort();
 

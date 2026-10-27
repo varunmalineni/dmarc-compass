@@ -23,7 +23,7 @@ import { renderReportsBody, renderReportDetailBody } from "./reports-html";
 import { renderAdmin } from "./admin-html";
 import { buildExport, csvStream, exportFilename, DATASETS, type Dataset } from "./exports";
 import { toJsonRows, slug } from "./csv";
-import { addNonce, BASE_HEADERS, clientKey, constantTimeEqual, csp, newNonce } from "./security";
+import { addNonce, BASE_HEADERS, clientKey, csp, newNonce } from "./security";
 import { isLocked, recordFailure, retryAfter, type AttemptState } from "./ratelimit";
 import { loadSummary } from "./report-data";
 import { renderSummary } from "./report-html";
@@ -47,7 +47,9 @@ import { loadMapPoints } from "./map-data";
 import { renderMapBody } from "./map-html";
 import { ensureSchema, getSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations";
 import { isDashboardPublic, setDashboardPublic, recordSync, getLastSync, getAppSetting } from "./app-settings";
-import { getAdminCreds, SETUP_HELP, type AdminEnv } from "./config";
+import { SETUP_HELP, type AdminEnv } from "./config";
+import { accountView, checkLogin, getAdminLogin, saveStoredLogin, sessionMaterial, type AdminLogin } from "./admin-login";
+import { validateNewLogin } from "./credentials";
 import { clearCookie, cookieName, makeToken, readCookie, requesterKind, safeNext, sessionCookie, verifyToken } from "./session";
 import { renderLogin } from "./login-html";
 import { parseFilters, parseList, scopeLabel, rangeLabel, withFilters } from "./filters";
@@ -92,20 +94,13 @@ function readBasic(request: Request): { user: string; password: string } | null 
   }
 }
 
-function credentialsMatch(request: Request, env: Env): boolean {
-  const creds = getAdminCreds(env);
+async function credentialsMatch(request: Request, env: Env, login: AdminLogin): Promise<boolean> {
   const given = readBasic(request);
-  if (!creds || !given) return false;
-  // Both are always compared, so timing does not reveal which one was wrong.
-  const userOk = constantTimeEqual(given.user, creds.user);
-  const passOk = constantTimeEqual(given.password, creds.password);
-  return userOk && passOk;
+  if (!given) return false;
+  return checkLogin(login, env.CONFIG_ENCRYPTION_KEY, given.user, given.password);
 }
 
-function challenge(env: Env, withHeader = true): Response {
-  // No admin login exists yet: say what to do instead of showing a login
-  // prompt that can never succeed.
-  if (!getAdminCreds(env)) return new Response(SETUP_HELP, { status: 503 });
+function challenge(withHeader = true): Response {
   return new Response("Unauthorized\n", {
     status: 401,
     headers: withHeader ? { "WWW-Authenticate": 'Basic realm="dmarc-compass"' } : {},
@@ -124,10 +119,11 @@ async function sessionSecret(db: D1Database): Promise<string> {
 
 /** Is there a valid sign-in cookie? Checking it is a signature check: no throttling, no writes. */
 async function hasSession(request: Request, env: Env): Promise<boolean> {
-  const creds = getAdminCreds(env);
   const token = readCookie(request.headers.get("cookie"), cookieName(!insecureHttp(env, new URL(request.url))));
-  if (!creds || !token) return false;
-  return verifyToken(token, await sessionSecret(env.DB), creds.user, creds.password, Math.floor(Date.now() / 1000));
+  if (!token) return false;
+  const login = await getAdminLogin(env.DB, env);
+  if (!login) return false;
+  return verifyToken(token, await sessionSecret(env.DB), login.user, sessionMaterial(login), Math.floor(Date.now() / 1000));
 }
 
 async function loadAttempts(env: Env, client: string): Promise<AttemptState | null> {
@@ -154,7 +150,9 @@ async function noteFailure(env: Env, client: string, state: AttemptState | null,
  * response to send: browsers are redirected to the sign-in page. Repeated wrong
  * passwords from one address lock that address out for a while (HTTP 429). */
 async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
-  if (!getAdminCreds(env)) return challenge(env);
+  const login = await getAdminLogin(env.DB, env);
+  // No admin login exists yet: say what to do instead of showing a login prompt that can never succeed.
+  if (!login) return new Response(SETUP_HELP, { status: 503 });
 
   if (!request.headers.get("authorization")) {
     if (await hasSession(request, env)) return null;
@@ -163,7 +161,7 @@ async function requireAdmin(request: Request, env: Env): Promise<Response | null
       const url = new URL(request.url);
       return new Response(null, { status: 303, headers: { location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` } });
     }
-    return challenge(env, kind === "client");
+    return challenge(kind === "client");
   }
 
   const client = clientKey(request.headers.get("cf-connecting-ip"));
@@ -176,13 +174,13 @@ async function requireAdmin(request: Request, env: Env): Promise<Response | null
       headers: { "retry-after": String(retryAfter(state as AttemptState, now)) },
     });
   }
-  if (credentialsMatch(request, env)) {
+  if (await credentialsMatch(request, env, login)) {
     if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
     return null;
   }
 
   await noteFailure(env, client, state, now);
-  return challenge(env);
+  return challenge();
 }
 
 const sameOrigin = (request: Request, url: URL) => {
@@ -192,8 +190,8 @@ const sameOrigin = (request: Request, url: URL) => {
 
 /** The sign-in page and form. */
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
-  const creds = getAdminCreds(env);
-  if (!creds) return new Response(SETUP_HELP, { status: 503 });
+  const login = await getAdminLogin(env.DB, env);
+  if (!login) return new Response(SETUP_HELP, { status: 503 });
   const page = (status: number, opts: Omit<Parameters<typeof renderLogin>[0], "url">) => new Response(renderLogin({ ...opts, url }), { status, headers: { ...HTML, "cache-control": "no-store", "x-robots-tag": "noindex" } });
 
   if (request.method === "GET") {
@@ -224,15 +222,13 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   }
 
   // Both are always compared, so timing does not reveal which one was wrong, and the message does not either.
-  const userOk = constantTimeEqual(text("username"), creds.user);
-  const passOk = constantTimeEqual(text("password"), creds.password);
-  if (!(userOk && passOk)) {
+  if (!(await checkLogin(login, env.CONFIG_ENCRYPTION_KEY, text("username"), text("password")))) {
     await noteFailure(env, client, state, now);
     return page(401, { next, error: "Wrong username or password." });
   }
 
   if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
-  const token = await makeToken(await sessionSecret(env.DB), creds.user, creds.password, now);
+  const token = await makeToken(await sessionSecret(env.DB), login.user, sessionMaterial(login), now);
   return new Response(null, { status: 303, headers: { location: next, "set-cookie": sessionCookie(token, !insecureHttp(env, url)), "cache-control": "no-store" } });
 }
 
@@ -469,6 +465,35 @@ async function handleSummary(request: Request, env: Env, url: URL): Promise<Resp
   });
 }
 
+/** Changes the admin user name and/or password from the Admin page. */
+async function saveAccount(request: Request, env: Env, url: URL, body: Record<string, unknown>): Promise<Response> {
+  const login = await getAdminLogin(env.DB, env);
+  if (!login) return jsonError("No admin login is configured.", 503);
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+  // Guessing the current password here counts against the same lockout as signing in.
+  const client = clientKey(request.headers.get("cf-connecting-ip"));
+  const now = Math.floor(Date.now() / 1000);
+  const state = await loadAttempts(env, client);
+  if (isLocked(state, now)) return jsonError("Too many failed attempts. Try again later.", 429);
+  if (!(await checkLogin(login, env.CONFIG_ENCRYPTION_KEY, login.user, str(body.currentPassword)))) {
+    await noteFailure(env, client, state, now);
+    return jsonError("The current password is wrong.", 403);
+  }
+  if (state) await env.DB.prepare("DELETE FROM auth_attempts WHERE client = ?").bind(client).run();
+
+  const checked = validateNewLogin({ currentUser: login.user, currentPassword: str(body.currentPassword), newUser: str(body.newUser), newPassword: str(body.newPassword) });
+  if (!checked.ok) return jsonError(checked.error, 400);
+
+  const saved = await saveStoredLogin(env.DB, env.CONFIG_ENCRYPTION_KEY, checked.user, checked.password, now);
+  // Everyone else is signed out (sessions are tied to the login); this browser gets a fresh session.
+  const next: AdminLogin = { source: "stored", user: saved.user, record: saved };
+  const token = await makeToken(await sessionSecret(env.DB), next.user, sessionMaterial(next), now);
+  return new Response(JSON.stringify({ ok: true, account: accountView(next) }), {
+    headers: { "content-type": "application/json", "set-cookie": sessionCookie(token, !insecureHttp(env, url)), "cache-control": "no-store" },
+  });
+}
+
 /** What Admin needs to show about the sync schedule. */
 async function syncScheduleView(env: Env, minutes?: number) {
   const m = minutes ?? (await getSyncMinutes(env.DB));
@@ -518,6 +543,8 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
       return res.ok ? mailboxState() : jsonError(res.error, 502);
     }
     if (body.action === "mailboxes_state") return mailboxState();
+
+    if (body.action === "account_save") return saveAccount(request, env, url, body);
 
     if (body.action === "sync_schedule_save") {
       const minutes = await setSyncMinutes(env.DB, body.minutes);
@@ -595,6 +622,7 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
   return new Response(
     renderAdmin({
       signedIn: await hasSession(request, env),
+      account: accountView((await getAdminLogin(env.DB, env)) as AdminLogin),
       notify,
       mailboxes,
       sync,
@@ -726,7 +754,7 @@ export async function runScheduled(env: Env, rt: Runtime): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await recordTick(env.DB, now);
 
-  if (!getAdminCreds(env) || (await loadMailboxes(env)).list.filter((m) => m.enabled).length === 0) {
+  if (!(await getAdminLogin(env.DB, env)) || (await loadMailboxes(env)).list.filter((m) => m.enabled).length === 0) {
     console.log("sync skipped: admin login or mailbox not configured yet");
     await runNotifications(env);
     return;

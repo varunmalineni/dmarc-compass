@@ -71,6 +71,14 @@ and `kubectl apply -k deploy/kubernetes` again; the pod restarts with the new se
 the sign-in lockout use the client address your ingress passes in `X-Forwarded-For`; only set it when traffic
 really comes through a proxy you control, or a client could pick its own address.
 
+## Changing the admin password
+
+Sign in, open **Admin → Account**, and change the user name or password. The new one is stored hashed in the database (on the volume), and the Secret's `ADMIN_USER` and `ADMIN_PASSWORD` only matter on a fresh install after that. If you forget it:
+
+```sh
+kubectl -n dmarc-compass exec deploy/dmarc-compass -- node dist/server.mjs --reset-admin
+```
+
 ## Things to know
 
 - **One replica only.** The database is a SQLite file and a sync takes a lock, so more replicas would not share

@@ -36,6 +36,15 @@ if (backupAt !== -1) {
   process.exit(0);
 }
 
+// node dist/server.mjs --reset-admin : forget a login saved from the Admin page, so ADMIN_USER / ADMIN_PASSWORD work again.
+if (process.argv.includes("--reset-admin")) {
+  const source = new SqliteD1(join(process.env.DATA_DIR?.trim() || "./data", "dmarc-compass.db"));
+  const removed = source.raw.prepare("DELETE FROM app_settings WHERE key = 'admin_login'").run().changes;
+  source.close();
+  console.log(Number(removed) ? "The login saved in the Admin page was removed. Sign in with ADMIN_USER and ADMIN_PASSWORD." : "No login was saved in the Admin page; ADMIN_USER and ADMIN_PASSWORD are already in use.");
+  process.exit(0);
+}
+
 const parsed = readConfig(process.env, { publicDir: join(here, "..", "public") });
 if (!parsed.ok) {
   console.error(startupHelp(parsed.problems));

@@ -124,6 +124,7 @@ async function main() {
       const r = spawnSync("kubectl", ["-n", NS, "exec", podOf(NS), "-c", "dmarc-compass", "--", "node", "dist/server.mjs", "--backup", "/data/e2e-backup.db"], { encoding: "utf8" });
       return /already exists/.test(r.stderr + r.stdout) ? 2 : r.status;
     },
+    async resetAdmin() { return exec("node", "dist/server.mjs", "--reset-admin"); },
     async restart() {
       // 1. Stop the server inside the pod the way Kubernetes would on a node drain: SIGTERM to the main process.
       const pod = podOf(NS);

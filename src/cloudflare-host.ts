@@ -10,7 +10,8 @@ import { getSyncMinutes } from "./sync-settings";
 import { containerIntervalSeconds } from "./sync-schedule";
 import { ensureSchema } from "./migrations";
 import { constantTimeEqual } from "./security";
-import { getAdminCreds, SETUP_HELP } from "./config";
+import { SETUP_HELP } from "./config";
+import { internalCredentials } from "./credentials";
 import type { Env } from "./app";
 import type { LeaseOptions, LeaseResult, Runtime } from "./runtime";
 import type { Mailbox } from "./mailboxes";
@@ -36,7 +37,7 @@ export class DmarcViewerContainer extends Container<CloudflareEnv> {
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const creds = getAdminCreds(this.env);
+    const creds = await internalCredentials(this.env);
     if (!creds) return new Response(SETUP_HELP, { status: 503 });
 
     // Internal only: the Worker calls this after a settings save so the
@@ -83,7 +84,7 @@ export class DmarcViewerContainer extends Container<CloudflareEnv> {
 }
 
 async function restartContainer(env: CloudflareEnv): Promise<void> {
-  const creds = getAdminCreds(env);
+  const creds = await internalCredentials(env);
   if (!creds) return;
   const container = getContainer(env.DMARC_CONTAINER, "dmarc-viewer");
   try {

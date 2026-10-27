@@ -162,12 +162,16 @@ export function toView(m: Mailbox, source: "saved" | "legacy"): MailboxView {
   return { id: m.id, name: m.name, host: m.host, user: m.user, folder: m.folder, enabled: m.enabled, source };
 }
 
+/** Bump this when the way the app authenticates to a running parser changes: every parser is then
+ * restarted once, so it starts with the new credentials. (auth2: derived from the encryption key
+ * instead of the admin password.) */
+export const PARSER_AUTH_SCHEME = "auth2";
+
 /** A string that changes whenever the container would have to be restarted
- * to read this mailbox (any connection detail, or its re-read interval), and
- * only then. The default interval leaves it as it was before intervals could
- * be chosen, so upgrading does not restart anything. */
+ * to read this mailbox (any connection detail, or its re-read interval, or the
+ * way the app authenticates to it), and only then. */
 export function connectionKey(m: Mailbox, intervalSeconds = 900): string {
-  const base: unknown[] = [m.id, m.host.toLowerCase(), m.user, m.password, m.folder || "INBOX"];
+  const base: unknown[] = [m.id, m.host.toLowerCase(), m.user, m.password, m.folder || "INBOX", PARSER_AUTH_SCHEME];
   return JSON.stringify(intervalSeconds === 900 ? base : [...base, intervalSeconds]);
 }
 

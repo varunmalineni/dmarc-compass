@@ -2,10 +2,13 @@ import { escapeHtml, fmtDate, fmtNumber, layout, panel, relTime, safeJson } from
 import type { NotifyView } from "./notify";
 import type { MailboxesView } from "./mailbox-store";
 import { intervalLabel, PRESETS } from "./sync-schedule";
+import type { AccountView } from "./admin-login";
+import { MIN_PASSWORD } from "./credentials";
 import type { LastSync } from "./app-settings";
 
 export interface AdminViewModel {
   signedIn?: boolean;
+  account: AccountView;
   notify: NotifyView;
   mailboxes: MailboxesView;
   sync: { minutes: number; presets: readonly number[]; nextAt: number | null; lastAttempt: number | null; tooSlow: boolean; tickGap: number | null };
@@ -50,6 +53,8 @@ const CSS = `
 .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch input:disabled { cursor: wait; }
 .admin-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
+.field { margin: 0 0 14px; max-width: 380px; }
+.field label { display: block; margin-bottom: 6px; }
 .admin-tabs { position: sticky; top: 92px; display: flex; flex-direction: column; gap: 2px; }
 .admin-tabs a { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-radius: 9px; color: var(--text-2); text-decoration: none; font-size: 13.5px; font-weight: 600; border: 1px solid transparent; }
 .admin-tabs a:hover { background: var(--surface-2); color: var(--text); }
@@ -171,6 +176,34 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       <label class="switch"><input type="checkbox" id="public-toggle" aria-labelledby="vis-label" ${vm.publicDashboard ? "checked" : ""}><span class="slider"></span></label>
     </div>
     <div class="msg" id="vis-msg" role="status"></div>`,
+  );
+
+  const ac = vm.account;
+  const account = panel(
+    "Admin login",
+    `<p class="hint" style="margin-top:0">${
+      ac.source === "stored"
+        ? `The login was changed on this page${ac.changedAt ? ` on <span id="acct-when">${new Date(ac.changedAt * 1000).toISOString().slice(0, 10)}</span>` : ""}. The password is stored hashed and can't be shown again.`
+        : "This is the login the app was deployed with (<code>ADMIN_USER</code> / <code>ADMIN_PASSWORD</code>). Changing it here stores a new one in the database, which then takes precedence."
+    } Signed in as <b id="acct-user">${escapeHtml(ac.user)}</b>.</p>
+    <form id="acct-form" autocomplete="on" novalidate>
+      <input type="text" name="username" value="${escapeHtml(ac.user)}" autocomplete="username" hidden aria-hidden="true" tabindex="-1">
+      <div class="field"><label for="acct-current" style="font-weight:600">Current password</label>
+        <input class="input" id="acct-current" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label for="acct-user-new" style="font-weight:600">User name</label>
+        <input class="input" id="acct-user-new" type="text" value="${escapeHtml(ac.user)}" autocomplete="off" maxlength="64" spellcheck="false" autocapitalize="none"></div>
+      <div class="field"><label for="acct-new" style="font-weight:600">New password <span class="hint" style="font-weight:400">(leave empty to keep the current one)</span></label>
+        <input class="input" id="acct-new" type="password" autocomplete="new-password" minlength="${MIN_PASSWORD}"></div>
+      <div class="field"><label for="acct-confirm" style="font-weight:600">Repeat the new password</label>
+        <input class="input" id="acct-confirm" type="password" autocomplete="new-password"></div>
+      <button class="btn" id="acct-save" type="submit">Save login</button>
+      <div class="msg" id="acct-msg" role="status"></div>
+    </form>
+    <p class="hint">At least ${MIN_PASSWORD} characters. Saving signs out every other session; scripts using HTTP Basic Auth need the new login.</p>
+    <details><summary><b>Forgot the password?</b></summary>
+      <p class="hint">Remove the stored login so the one the app was deployed with works again. Self-hosted: <code>node dist/server.mjs --reset-admin</code> inside the container (for example <code>docker compose exec dmarc-compass node dist/server.mjs --reset-admin</code>).
+      Cloudflare: <code>npx wrangler d1 execute DB -c wrangler.local.jsonc --remote --command "DELETE FROM app_settings WHERE key = 'admin_login'"</code>.</p>
+    </details>`,
   );
 
   const mb = vm.mailboxes;
@@ -304,6 +337,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     { id: "status", label: "Setup status", badge: todo ? String(todo) : "", warn: true, html: status + schedule },
     { id: "mailboxes", label: "Mailboxes", badge: mb.rows.length ? String(mb.rows.length) : "", html: imap },
     { id: "visibility", label: "Dashboard visibility", badge: "", html: visibility },
+    { id: "account", label: "Account", badge: "", html: account },
     { id: "notifications", label: "Notifications", badge: n.hooks.length ? String(n.hooks.length) : "", html: notifications },
   ];
   const adminBody = `<div class="admin-layout">
@@ -348,6 +382,23 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     post({action:'sync'}).then(function(t){statusStale=true;var o=JSON.parse(t);var bad=(o.mailboxes||[]).filter(function(x){return !x.ok});say(m,!bad.length,'Done: '+o.newReports+' new DMARC reports, '+o.newTlsReports+' new TLS reports'+(bad.length?'. Problems: '+bad.map(function(x){return x.name+' ('+x.error+')'}).join('; '):'')+'. Reload to refresh the status above.')})
       .catch(function(err){statusStale=true;say(m,false,'Sync failed: '+err.message)}).finally(function(){b.disabled=false});
   });
+  (function(){
+    var $=function(id){return document.getElementById(id)};
+    var f=$('acct-form');if(!f)return;
+    f.addEventListener('submit',function(e){
+      e.preventDefault();
+      var m=$('acct-msg'),b=$('acct-save'),np=$('acct-new').value;
+      if(!$('acct-current').value){say(m,false,'Enter your current password.');return}
+      if(np!==$('acct-confirm').value){say(m,false,'The two new passwords are not the same.');return}
+      b.disabled=true;m.className='msg';m.textContent='Saving...';
+      post({action:'account_save',currentPassword:$('acct-current').value,newUser:$('acct-user-new').value,newPassword:np}).then(function(t){
+        var a=JSON.parse(t).account;
+        $('acct-user').textContent=a.user;
+        ['acct-current','acct-new','acct-confirm'].forEach(function(id){$(id).value=''});
+        say(m,true,'Saved. Other sessions were signed out; you stay signed in here.');
+      }).catch(function(err){say(m,false,err.message.trim())}).finally(function(){b.disabled=false});
+    });
+  })();
   var SY=${safeJson(sy)};
   (function(){
     var $=function(id){return document.getElementById(id)};

@@ -38,6 +38,16 @@ docker run -d --name dmarc-compass -p 127.0.0.1:8080:8080 -v dmarc-data:/data \
 
 (Save the key you generate; this one-liner does not show it again.)
 
+## Changing the admin password
+
+Sign in, open **Admin → Account**, and change the user name or password (you are asked for the current password). It is stored hashed in the database, and every other session is signed out. Once you have done this, the saved login takes precedence over `ADMIN_USER` and `ADMIN_PASSWORD` in `.env`, which only matter on a fresh install.
+
+If you forget it, remove the saved login so the one in `.env` works again:
+
+```sh
+docker compose exec dmarc-compass node dist/server.mjs --reset-admin
+```
+
 ## Settings
 
 The three required ones are above. Everything else is optional.

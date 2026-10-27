@@ -190,7 +190,7 @@ export interface ContainerLike {
  * summary reports `last_update` as null until then. */
 export async function waitUntilRead(
   container: ContainerLike,
-  env: { DB: D1Database; ADMIN_USER?: string; ADMIN_PASSWORD?: string; HTTP_SERVER_USER?: string; HTTP_SERVER_PASSWORD?: string },
+  env: { DB: D1Database; CONFIG_ENCRYPTION_KEY?: string; ADMIN_USER?: string; ADMIN_PASSWORD?: string; HTTP_SERVER_USER?: string; HTTP_SERVER_PASSWORD?: string },
   timeoutMs: number,
   pollMs = 3000,
   /** Lets a caller that knows the parser has died stop waiting at once. */

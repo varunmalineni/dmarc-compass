@@ -68,6 +68,7 @@ async function main() {
     async backupAgainStatus() {
       return spawnSync("docker", ["exec", names.app, "node", "dist/server.mjs", "--backup", "/data/e2e-backup.db"], { encoding: "utf8" }).status;
     },
+    async resetAdmin() { return docker("exec", names.app, "node", "dist/server.mjs", "--reset-admin"); },
     async restart() {
       const t0 = Date.now();
       docker("stop", "-t", "20", names.app);

@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 
 export const PASSWORD = "e2e-admin-password-123";
 export const KEY = Buffer.alloc(32, 9).toString("base64");
+export const NEW_PASSWORD = "a-brand-new-password-1";
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- reporting
@@ -103,6 +104,7 @@ export function appendMessages(port, messages) {
 
 export function createClient() {
   const c = {
+    withBase(base) { c.base = base; return c; },
     base: "",
     cookie: "",
     async http(path, opts = {}) {
@@ -116,9 +118,9 @@ export function createClient() {
       const text = await res.text();
       try { return { status: res.status, json: JSON.parse(text) }; } catch { return { status: res.status, text }; }
     },
-    async signIn() {
+    async signIn(user = "admin", password = PASSWORD) {
       c.cookie = "";
-      const res = await c.http("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: "admin", password: PASSWORD, next: "/admin" }) });
+      const res = await c.http("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: user, password, next: "/admin" }) });
       return res.status === 303 && res.headers.get("location") === "/admin";
     },
     async csvRows(dataset) {
@@ -151,6 +153,7 @@ export const BACKUP_COUNT_SCRIPT =
  *   uid()                         -> string
  *   parserEnvNames()              -> string (the script's output)
  *   backup(), backupAgainStatus() -> count string / exit status
+ *   resetAdmin()                  -> the reset command's output
  *   restart()                     -> { exitCode, seconds, extra }  (leaves the app running again, c.base updated)
  */
 export async function runScenario(h, c) {
@@ -210,6 +213,25 @@ export async function runScenario(h, c) {
   check("a backup made while running holds all 4 reports", copied === "4", copied);
   check("a backup never overwrites an existing file", (await h.backupAgainStatus()) === 2);
 
+  // ---- changing the admin login from the Admin page
+  const other = createClient();
+  other.base = c.base;
+  check("a second browser can sign in", await other.signIn());
+  const wrongCurrent = await c.admin({ action: "account_save", currentPassword: "not-my-password", newUser: "owner", newPassword: "a-brand-new-password-1" });
+  check("changing the login needs the right current password", wrongCurrent.status === 403 && /current password is wrong/i.test(wrongCurrent.text ?? ""), JSON.stringify(wrongCurrent));
+  const weak = await c.admin({ action: "account_save", currentPassword: PASSWORD, newUser: "owner", newPassword: "short" });
+  check("and a weak new password is refused with the reason", weak.status === 400 && /at least 10/.test(weak.text ?? ""), JSON.stringify(weak));
+  const changed = await c.admin({ action: "account_save", currentPassword: PASSWORD, newUser: "owner", newPassword: NEW_PASSWORD });
+  check("the login is changed", changed.status === 200 && changed.json?.account?.user === "owner" && changed.json?.account?.source === "stored", JSON.stringify(changed));
+  check("the browser that changed it stays signed in", (await c.http("/export/reports?range=all")).status === 200);
+  check("every other session is signed out", (await other.http("/export/reports?range=all")).status !== 200);
+  check("the old login no longer signs in", !(await createClient().withBase(c.base).signIn("admin", PASSWORD)));
+  check("and the new login does", await createClient().withBase(c.base).signIn("owner", NEW_PASSWORD));
+  const basic = (u, p) => fetch(`${c.base}/export/reports?range=all`, { headers: { authorization: "Basic " + Buffer.from(`${u}:${p}`).toString("base64") } });
+  check("scripts with the new login work and with the old one do not", (await basic("owner", NEW_PASSWORD)).status === 200 && (await basic("admin", PASSWORD)).status === 401);
+  const synced = await c.admin({ action: "sync" });
+  check("syncing is unaffected by the change (the parser has its own credentials)", synced.status === 200 && synced.json?.mailboxes?.[0]?.ok === true, JSON.stringify(synced).slice(0, 300));
+
   const r = await h.restart();
   check("stops cleanly on SIGTERM (exit 0, within 10 s)", r.exitCode === "0" && r.seconds < 10, `exit ${r.exitCode} after ${r.seconds}s`);
   for (const extra of r.extra ?? []) check(extra.name, extra.ok, extra.detail);
@@ -218,4 +240,11 @@ export async function runScenario(h, c) {
   const after = await c.admin({ action: "sync" });
   check("sync works again after the restart (parsers start again)", after.status === 200 && after.json?.mailboxes?.[0]?.ok === true, JSON.stringify(after).slice(0, 300));
   check("and finds nothing duplicated", (await c.csvRows("reports")) === 4);
+
+  check("the changed login survives the restart", (await createClient().withBase(c.base).signIn("owner", NEW_PASSWORD)) && !(await createClient().withBase(c.base).signIn("admin", PASSWORD)));
+
+  // ---- forgot the password: the reset command
+  const reset = await h.resetAdmin();
+  check("the reset command removes the saved login", /removed/i.test(reset), reset);
+  check("and the deployed login works again, the changed one does not", (await createClient().withBase(c.base).signIn("admin", PASSWORD)) && !(await createClient().withBase(c.base).signIn("owner", NEW_PASSWORD)));
 }

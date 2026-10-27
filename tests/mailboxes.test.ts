@@ -90,9 +90,9 @@ test("fingerprint changes exactly when a connection detail changes", async () =>
   assert.ok(connectionKey(m).includes("pw")); // the key itself holds the password: never store or log it
 });
 
-test("the default interval leaves the fingerprint exactly as it was, so upgrading restarts nothing", async () => {
+test("the fingerprint carries the parser-authentication marker, so changing the scheme restarts every parser once", async () => {
   const m = must(addMailbox([], base, "a")).mailbox;
-  assert.equal(connectionKey(m), JSON.stringify(["a", "imap.example.com", "dmarc@example.com", "pw", "INBOX"]));
+  assert.equal(connectionKey(m), JSON.stringify(["a", "imap.example.com", "dmarc@example.com", "pw", "INBOX", "auth2"]));
   assert.equal(await fingerprint(m, 900), await fingerprint(m));
   assert.notEqual(await fingerprint(m, 300), await fingerprint(m, 900));
   assert.notEqual(await fingerprint(m, 300), await fingerprint(m, 600));

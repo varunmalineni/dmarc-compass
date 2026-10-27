@@ -1,12 +1,14 @@
 import type { DmarcReportJson, ReportHeader } from "./dmarc-types";
 import type { TlsReportHeader, TlsReportJson } from "./tls-types";
 import { espNameFromPtr } from "./esp.ts";
-import { getAdminCreds, type AdminEnv } from "./config.ts";
+import type { AdminEnv } from "./config.ts";
+import { internalCredentials } from "./credentials.ts";
 import { getAppSetting, setAppSetting } from "./app-settings.ts";
 import { streamObjects } from "./json-stream.ts";
 
 export interface SyncEnv extends AdminEnv {
   DB: D1Database;
+  CONFIG_ENCRYPTION_KEY?: string;
 }
 
 /** Makes an authenticated internal request against the dmarc-report-viewer container. */
@@ -16,7 +18,7 @@ export async function callContainer(
   env: SyncEnv,
   init?: RequestInit,
 ): Promise<Response> {
-  const creds = getAdminCreds(env);
+  const creds = await internalCredentials(env);
   if (!creds) throw new Error("Admin credentials are not configured");
   const auth = "Basic " + btoa(`${creds.user}:${creds.password}`);
   const headers = new Headers(init?.headers);
