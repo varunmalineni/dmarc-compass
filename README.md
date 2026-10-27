@@ -4,11 +4,11 @@
 
 # dmarc-compass
 
-**DMARC and TLS-RPT reporting that runs in your own Cloudflare account.**
+**DMARC and TLS-RPT reporting that you run yourself: on Cloudflare, in Docker, or on Kubernetes.**
 
 Point your domains' `rua=` addresses at one or more mailboxes and see who is sending as you,<br>what is failing, and whether you are ready to move from `p=none` to `p=reject`.
 
-[Quick start](#quick-start) &nbsp;·&nbsp; [Run it yourself](#run-it-yourself-docker-kubernetes-a-vm) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
+[Choose how to run it](#choose-how-to-run-it) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Try the demo](#try-it-without-a-mailbox) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Security](#security-model)
 
 <br>
 
@@ -31,7 +31,7 @@ Point your domains' `rua=` addresses at one or more mailboxes and see who is sen
   <tr>
     <td valign="top"><b>Alerts and webhooks</b><br><sub>Alerts for new failing senders, pass-rate drops, policy changes and sync problems, plus a scheduled digest, to Slack or any URL as signed JSON.</sub></td>
     <td valign="top"><b>Exports and reports</b><br><sub>CSV or JSON from every table, matching your filters, and a printable one-document summary report you can save as PDF.</sub></td>
-    <td valign="top"><b>No server to run</b><br><sub>Workers, D1 and one container, configured from a login-protected <code>/admin</code> page. <code>git clone</code>, <code>npm install</code>, <code>npm run setup</code>.</sub></td>
+    <td valign="top"><b>Runs where you want it</b><br><sub>Cloudflare (Workers, D1 and one container, nothing to look after), Docker Compose, or Kubernetes. The same app, sign-in, alerts and settings everywhere, configured from a login-protected <code>/admin</code> page.</sub></td>
   </tr>
 </table>
 
@@ -71,7 +71,25 @@ Point your domains' `rua=` addresses at one or more mailboxes and see who is sen
   <img src="docs/images/filters.gif" alt="Selecting two domains and changing the time range" width="760">
 </div>
 
-## Quick start
+## Choose how to run it
+
+It is the same app everywhere: the dashboards, alerts, digest, exports, sign-in and settings are identical. What differs is where it runs and what keeps its data.
+
+| | [Cloudflare](#cloudflare) | [Docker, Compose or a VM](#docker) | [Kubernetes](#kubernetes) |
+|---|---|---|---|
+| **Best for** | Nothing to look after | A machine you already have | An existing cluster |
+| **You need** | A Cloudflare account on the Workers Paid plan; Docker and Node.js 20+ on your computer to deploy | Docker | A cluster with block storage, and `kubectl` |
+| **Cost** | About $6 to $7 a month | Your machine | Your cluster |
+| **Data is kept in** | D1, managed by Cloudflare | A SQLite file in a Docker volume | A SQLite file on a persistent volume |
+| **Backups** | Cloudflare keeps 30 days of point-in-time restore | You back up the file (one command) | You back up the file (one command) |
+| **Parsers** | One, shared: mailboxes are read in turns | One per mailbox, side by side | One per mailbox, side by side |
+| **HTTPS** | Provided | Your reverse proxy (a Caddy example is included) | Your ingress |
+| **Upgrade** | `git pull && npm install && npm run deploy` | `git pull && docker compose up -d --build` | Push a new image tag, `kubectl apply -k` |
+| **Tested by** | Unit tests, plus a live deployment | The above plus `npm run e2e:docker`: the real parser and a real IMAP server | The above plus `npm run e2e:k8s` on a real cluster |
+
+Not sure? Choose **Cloudflare** if you do not want to run anything, or **Docker Compose** for the quickest look on your own computer. Whichever you pick you also need a **mailbox with IMAP** that receives your `rua=` reports; [how to set that up](#your-mailbox-for-any-option) is below.
+
+### Cloudflare
 
 **You need:** a Cloudflare account on the **Workers Paid** plan, **Docker** running locally, **Node.js 20+**, and a mailbox with **IMAP** that receives your `rua=` reports.
 
@@ -89,13 +107,51 @@ Then open `https://<your-worker>.workers.dev/admin`, sign in, enter your mailbox
 Nothing in the repository is specific to your account. Wrangler records your resource IDs in `wrangler.local.jsonc`, which is gitignored.
 
 <details>
-<summary><b>Cost</b></summary>
+<summary><b>Cloudflare cost</b></summary>
 
 <br>
 
 Containers are not available on the free plan. Budget roughly **$6 to $7 per month**: the $5 plan fee plus about $1.75 of container memory and disk beyond the included allowance. With the default 15-minute sync the container stays awake continuously. A longer interval can let it sleep between syncs, but I have not measured what that saves. See [current Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/).
 
 </details>
+
+### Docker
+
+**You need:** Docker with Compose v2, and a mailbox with IMAP. The image builds for x86-64 and ARM64.
+
+```bash
+git clone https://github.com/<you>/dmarc-compass.git
+cd dmarc-compass
+cp .env.example .env        # then edit it: ADMIN_PASSWORD and CONFIG_ENCRYPTION_KEY
+docker compose up -d --build
+```
+
+Set three values in `.env`: `ADMIN_USER`, `ADMIN_PASSWORD` (10 or more characters; there is no default password) and `CONFIG_ENCRYPTION_KEY` (create one with `openssl rand -base64 32`, and keep a copy). If one is missing, Compose stops and says which.
+
+Open <http://localhost:8080>, sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**. The first sync takes a few seconds. The port is bound to your computer only; to serve other people, put a reverse proxy with HTTPS in front.
+
+**[The full Docker guide](docs/self-hosting.md)** covers every setting, HTTPS with Caddy, backups, upgrading, memory, and plain `docker run`. It also works on any Linux VM that has Docker.
+
+### Kubernetes
+
+**You need:** a cluster with a default storage class (block storage, not NFS), `kubectl`, and a registry the cluster can pull from (or a local cluster such as Docker Desktop, OrbStack or kind).
+
+```bash
+docker build -f deploy/docker/Dockerfile -t registry.example.com/dmarc-compass:1.0 . && docker push registry.example.com/dmarc-compass:1.0
+# set newName and newTag under "images:" in deploy/kubernetes/kustomization.yaml, then:
+kubectl apply -f deploy/kubernetes/namespace.yaml
+kubectl -n dmarc-compass create secret generic dmarc-compass-secrets \
+  --from-literal=ADMIN_USER=admin --from-literal=ADMIN_PASSWORD='choose-a-long-password' \
+  --from-literal=CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+kubectl apply -k deploy/kubernetes
+kubectl -n dmarc-compass port-forward service/dmarc-compass 8080:80      # then open http://localhost:8080
+```
+
+The pod runs as a single replica, as a non-root user with a read-only filesystem, and meets the "restricted" Pod Security profile. **[The Kubernetes guide](deploy/kubernetes/README.md)** has the steps in detail, an Ingress example for HTTPS, backups, upgrades and troubleshooting.
+
+### Your mailbox (for any option)
+
+Whichever way you run it, the app reads reports from a mailbox over IMAP. Sign in, open **Admin → Mailboxes**, and add it. Two things to set up first:
 
 <details>
 <summary><b>Point your domains at the mailbox</b></summary>
@@ -154,80 +210,16 @@ A sidebar holds the navigation and the theme toggle. The top bar carries two **g
 
 **Admin → Setup status → Sync schedule** sets how often the mailboxes are checked: every 5, 10, 15 or 30 minutes, or every 1, 2, 4, 6, 12 or 24 hours. The default is 15 minutes. Receiving providers send aggregate reports about once a day, so a short interval mostly finds nothing new; it mainly matters if you want alerts quickly.
 
-The Worker wakes every 5 minutes (the cron in `wrangler.jsonc`) and runs a sync only when one is due, so the interval changes without a redeploy. Every wake-up also checks alerts and the digest, so they are on time whatever the interval. The **Run sync now** button is always available, and counts as a sync for the schedule.
+The app wakes every 5 minutes and runs a sync only when one is due, so the interval changes without a redeploy or restart. On Cloudflare that wake-up is the cron in `wrangler.jsonc`; self-hosted, the server has its own timer and there is nothing to configure. Every wake-up also checks alerts and the digest, so they are on time whatever the interval. The **Run sync now** button is always available, and counts as a sync for the schedule.
 
 Things that follow from it:
-- The parser container re-reads the mailbox every 5 to 15 minutes while awake (matching your interval, capped at 15). Changing the interval can restart the container once, on the next sync.
-- Each sync waits for the parser to finish reading before copying reports, so a container that slept between syncs and woke up empty is handled. If a mailbox never finishes (wrong login or folder), the sync reports a timeout and the *Sync problem* alert fires, instead of quietly syncing nothing.
-- If you deployed an earlier version, its cron fired every 15 minutes. Intervals shorter than that need `"crons": ["*/5 * * * *"]` in your wrangler config and a redeploy; Admin shows a warning if the deployed schedule is slower than the interval you chose.
-
-## Run it yourself (Docker, Kubernetes, a VM)
-
-Cloudflare is the main way to run this, but the same app also runs as a single container on any machine with Docker, on a Linux VM (install Docker and use the Compose file below), and on Kubernetes. It keeps its data in a SQLite file and starts **one parser per mailbox**, side by side (the Cloudflare version shares one parser between mailboxes to keep its cost flat). Dashboards, alerts, sign-in and settings are the same code.
-
-**Docker Compose**
-
-```sh
-cp .env.example .env              # then edit it
-docker compose up -d --build
-```
-
-Open <http://localhost:8080>. In `.env` you must set:
-
-| Setting | What it is |
-|---|---|
-| `ADMIN_USER`, `ADMIN_PASSWORD` | The sign-in. At least 10 characters; there is no default password. |
-| `CONFIG_ENCRYPTION_KEY` | Encrypts mailbox passwords in the database. Create one with `openssl rand -base64 32` and keep a copy: without it, saved mailbox passwords cannot be read. |
-
-If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, exactly as in the [Quick start](#quick-start).
-
-**Kubernetes.** Plain manifests in [`deploy/kubernetes`](deploy/kubernetes/README.md): a one-replica Deployment that meets the "restricted" Pod Security profile (non-root, read-only filesystem), a volume for the database, a Service, and an example Ingress. Install is `kubectl apply -k deploy/kubernetes` after creating a Secret; the folder's README has the steps, HTTPS, backups and what to watch for. `npm run e2e:k8s` tests it on a real cluster.
-
-**Plain `docker run`**
-
-```sh
-docker build -f deploy/docker/Dockerfile -t dmarc-compass .
-docker run -d --name dmarc-compass -p 127.0.0.1:8080:8080 -v dmarc-data:/data \
-  -e ADMIN_USER=admin -e ADMIN_PASSWORD='choose-a-long-password' \
-  -e CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)" dmarc-compass
-```
-
-(Save the key you generate; this one-liner does not show it again.)
-
-**Other settings** (environment variables)
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `PORT` | `8080` | Port inside the container. |
-| `DATA_DIR` | `/data` | Where the database is kept. Mount a volume here. |
-| `TRUST_PROXY` | off | Set to `true` behind a reverse proxy that adds `X-Forwarded-For` and `X-Forwarded-Proto`. Without it the sign-in lockout counts the connection's own address, which behind a proxy is the proxy. |
-| `PUBLIC_URL` | from the request | The address people use, e.g. `https://dmarc.example.com`, if the proxy does not pass the right host. Used in links in alerts. |
-| `ALLOW_INSECURE_HTTP` | off | Lets you sign in over plain `http://` from another machine. Anyone on that network can read the password and session, and Admin shows a warning. Not needed for `http://localhost`. |
-| `SLACK_WEBHOOK_URL` | none | Can also be added in Admin. |
-| `DNS_SERVER` | `1.1.1.1:53` | Used to look up the names of sending IPs. Change it if your network blocks public DNS. |
-| `READ_TIMEOUT_SECONDS` | `240` | How long a sync waits for a very large mailbox to be read. |
-| `TZ` | `UTC` | Time zone for the parsers' logs. |
-
-**HTTPS.** Sign-in needs HTTPS except on `localhost`. Put a reverse proxy (Caddy, nginx, Traefik) in front, set `TRUST_PROXY=true`, and keep the container's port bound to `127.0.0.1` as the Compose file does.
-
-**Backups.** Everything is in one SQLite file in the data volume. A consistent copy can be made while the server runs:
-
-```sh
-docker compose exec dmarc-compass node dist/server.mjs --backup /data/backup-$(date +%F).db
-docker compose cp dmarc-compass:/data/backup-$(date +%F).db .
-```
-
-Keep your `CONFIG_ENCRYPTION_KEY` with the backup: without it the saved mailbox passwords cannot be read. To restore, stop the container, put the file back as `dmarc-compass.db` in the volume (delete any `-wal` and `-shm` files next to it) and start again.
-
-**Upgrading.** `git pull`, then `docker compose up -d --build`. Tables are upgraded automatically on start, and the data volume is kept.
-
-**Memory.** Each parser holds its mailbox in memory, so memory grows with the number and size of mailboxes. The Compose file caps the container at 1 GB; raise `mem_limit` for large ones. A long query (the year or all-time Overview of a very large fleet) holds up other requests while it runs, which is fine for one admin or a few users.
-
-**What the self-hosted versions test.** `npm run e2e:docker` and `npm run e2e:k8s` build the image, starts a real IMAP test server (GreenMail), fills a mailbox with synthetic reports and drives the app over HTTP: sign-in, adding the mailbox, syncing through the real parser, exports, restarting, and checking that nothing is lost. The Kubernetes one also replaces the pod and checks the volume keeps the data.
+- The parser re-reads the mailbox every 5 to 15 minutes while it runs (matching your interval, capped at 15). Changing the interval restarts the parser once, on the next sync.
+- Each sync waits for the parser to finish reading before copying reports, so a parser that has just started (or a Cloudflare container that slept between syncs) is handled. If a mailbox never finishes (wrong login or folder), the sync reports it and the *Sync problem* alert fires, instead of quietly syncing nothing. Self-hosted, a failed first read is reported at once with the reason, and the next sync tries again with a fresh parser.
+- On Cloudflare, if you deployed an earlier version, its cron fired every 15 minutes. Intervals shorter than that need `"crons": ["*/5 * * * *"]` in your wrangler config and a redeploy; Admin shows a warning if the deployed schedule is slower than the interval you chose.
 
 ## Scale
 
-I tested with generated data, on a local SQLite database standing in for D1 (`npm run bench -- typical|stress`, see `scripts/bench`). Milliseconds on D1 will differ; the query plans, query counts and memory are what carry over.
+I tested with generated data, on a local SQLite database (`npm run bench -- typical|stress`, see `scripts/bench`). The self-hosted versions run on that same SQLite engine, so the timings are closer to what they will see; on Cloudflare, D1 is SQLite too but its milliseconds will differ, and the query plans, query counts and memory are what carry over.
 
 | | Typical | Stress |
 |---|---|---|
@@ -252,7 +244,7 @@ What I measured at the stress size, after the fixes in this version:
 - **Long ranges are the slow part.** Every figure on the Overview comes from adding up the records in the range, so a year or all time of a 1,500-domain fleet reads millions of rows. I did not build summary tables for this: with many mail providers reporting the same sending addresses the saving is small (about 1.25 times fewer rows in my data), so it is not worth the extra code. If you keep years of history and look at long ranges often, tell me and I will revisit it.
 - **Sync** no longer loads the whole report list. It reads it as a stream, checks the last 30 days of reports every sync, and walks older history in steps, remembering where it got to. At 1 million reports it used about 10 MB (the Worker allows 128 MB) and 40 to 80 database calls per sync, against 700 MB and 12,000 calls before. The walk is repeated once a month to catch reports that arrive very late.
 - **A big first import is spread over several syncs.** Each sync copies up to 600 new reports, newest first, and syncs again at the next 5-minute wake-up until the backlog is gone. Years of mail for a large fleet therefore fill in over some hours, with the most recent weeks first. The Worker's limits (1,000 database calls and 128 MB per run) are why it is not done at once.
-- **The parser container is the likely limit on history.** It keeps every report in memory and sends the whole list on each sync, so its memory grows with the mailbox, not with the database. I have not measured this. The database keeps history after mail is deleted, so for very large fleets, archive old report emails out of the mailbox and keep the dashboard history in D1.
+- **The parser is the likely limit on history.** It keeps every report in memory and sends the whole list on each sync, so its memory grows with the mailbox, not with the database. I have not measured this. The database keeps history after mail is deleted, so for very large fleets, archive old report emails out of the mailbox and keep the dashboard history in D1.
 - **D1 limits**: 10 GB per database, 30 seconds per query. The stress size is under a tenth of the database limit.
 
 ## Several mailboxes
@@ -261,11 +253,15 @@ If your reports arrive in more than one mailbox (different `rua=` addresses, a s
 
 Everything is combined: the dashboard, exports, summary report and alerts show one view, sorted by domain, and a report that reaches two mailboxes is stored once. Each report remembers which mailbox it came from.
 
-**How it works, and what it costs.** One parser container reads the mailboxes **in turns**, so the cost stays what it is with a single mailbox. On each sync run it loads a mailbox, waits for the parser to finish reading it, copies the new reports into the database, then moves to the next. If a run is short of time it stops and the next run continues from the mailbox it did not reach, so none is starved. A mailbox that fails (wrong password, server down) is recorded on its row and never stops the others.
+**How it works depends on where you run it.**
 
-- **More mailboxes means each is refreshed less often**, because the parser has to re-read a folder after every switch. A small mailbox takes about a minute; a very large folder can take several (raise `READ_TIMEOUT_SECONDS`, default 240, if a large one times out). With one mailbox nothing is switched or re-read.
-- **Original XML/JSON** for a report from a mailbox the parser is not holding takes up to a minute to fetch, because it has to switch first. The buttons show progress while it works. The parsed data in the dashboard is always available.
-- Up to 10 mailboxes. If you need them refreshed more often than this allows, the alternative is one container per mailbox, which costs roughly $1.75 per month more for each.
+- **Self-hosted (Docker, Kubernetes):** each mailbox gets its **own parser**, running side by side. They are refreshed independently on the sync schedule, there is no taking turns, and original XML/JSON comes straight from that mailbox's parser. Memory grows with each mailbox, so size the container or pod for the total; a mailbox that fails (wrong password, server down) is recorded on its row and never affects the others.
+- **Cloudflare:** one parser container reads the mailboxes **in turns**, so the cost stays what it is with a single mailbox. On each sync run it loads a mailbox, waits for the parser to finish reading it, copies the new reports into the database, then moves to the next. If a run is short of time it stops and the next run continues from the mailbox it did not reach, so none is starved. A failing mailbox never stops the others.
+  - **More mailboxes means each is refreshed less often**, because the parser has to re-read a folder after every switch. A small mailbox takes about a minute; a very large folder can take several (raise `READ_TIMEOUT_SECONDS`, default 240, if a large one times out). With one mailbox nothing is switched or re-read.
+  - **Original XML/JSON** for a report from a mailbox the parser is not holding takes up to a minute to fetch, because it has to switch first. The buttons show progress while it works. The parsed data in the dashboard is always available.
+  - If you need mailboxes refreshed more often than this allows, the alternative is one container per mailbox, which costs roughly $1.75 per month more for each.
+
+Up to 10 mailboxes.
 
 ## Exports and reports
 
@@ -391,35 +387,89 @@ A report is identified by reporter + report ID + domain, enforced by a unique in
 
 </details>
 
+<details>
+<summary><b>Architecture (self-hosted)</b></summary>
+
+<br>
+
+```
+  receivers ──► IMAP mailbox(es)
+                      │
+   ┌──────────── one container (or pod) ─────────────────────────┐
+   │  parser, unmodified upstream program   × one per mailbox     │
+   │  (child processes, listening only on 127.0.0.1)              │
+   │              ▲                                               │
+   │              │ every sync interval                           │
+   │  app (Node)  │  • sync job   → writes to SQLite              │
+   │              ▼  • dashboard  → reads from SQLite             │
+   │                 • /admin     → settings, status              │
+   └──────────────────────────────┬───────────────────────────────┘
+                                  ▼
+                 /data volume: dmarc-compass.db (the durable copy)
+```
+
+It is the same application code. `src/app.ts` holds everything except the places that differ, which sit behind the small interface in `src/runtime.ts`: `src/cloudflare-host.ts` supplies the Cloudflare version (one shared container, D1, Workers sockets) and `src/node/` the self-hosted one (a parser process per mailbox, SQLite through a D1-shaped adapter, Node sockets). The parser holds its mailbox in memory and forgets it on restart; the database is what survives.
+
+</details>
+
 ## Operating it
+
+**Cloudflare**
 
 ```bash
 npm run deploy      # ship changes; also upgrades the database schema on first request
 npm run dev         # local development (copy .dev.vars.example to .dev.vars first)
 npm run tail        # live logs
-npm run typecheck
-npm test            # unit tests (schedule math, mailbox rotation, settings, escaping, security)
-npm run vendor      # refresh public/vendor after bumping Chart.js, Leaflet or Inter
 ```
 
-**Updating:** `git pull && npm install && npm run deploy`.
+Update with `git pull && npm install && npm run deploy`. Uninstall with `npx wrangler delete -c wrangler.local.jsonc`, then delete the D1 database and the container application from the Cloudflare dashboard.
+
+**Docker**
+
+```bash
+docker compose logs -f dmarc-compass                 # live logs, including each parser's
+git pull && docker compose up -d --build             # update; the data volume is kept
+docker compose exec dmarc-compass node dist/server.mjs --backup /data/backup.db    # backup
+docker compose down                                   # stop (add -v to also delete the data)
+```
+
+**Kubernetes**
+
+```bash
+kubectl -n dmarc-compass logs deploy/dmarc-compass   # live logs
+kubectl apply -k deploy/kubernetes                    # update, after changing the image tag
+kubectl delete namespace dmarc-compass               # uninstall; this also deletes the data volume
+```
+
+Backups, restore and upgrades in detail are in the [Docker guide](docs/self-hosting.md) and the [Kubernetes guide](deploy/kubernetes/README.md). Keep your `CONFIG_ENCRYPTION_KEY` with any backup.
 
 **The dashboard is empty:** open **Admin** and read *Setup status*; it names what is missing. If the mailbox looks right but nothing arrives, run `scripts/test-imap.py` to separate a mailbox problem from a deployment problem.
 
-**Uninstalling:** `npx wrangler delete -c wrangler.local.jsonc`, then delete the D1 database and the container application from the Cloudflare dashboard.
+**For development**
+
+```bash
+npm run typecheck   # Worker and Node code
+npm test            # unit tests (schedule math, sync, parser pool, settings, escaping, security, deploy files)
+npm run build:node  # bundle the self-hosted server into dist/server.mjs
+npm run e2e:docker  # the image with the real parser and a real IMAP server (needs Docker)
+npm run e2e:k8s     # the manifests on a real cluster (needs kubectl and a cluster)
+npm run bench       # scale benchmark on generated data
+npm run vendor      # refresh public/vendor after bumping Chart.js, Leaflet or Inter
+```
 
 ## Security model
 
-- **Sign-in page.** The admin login (`ADMIN_USER` / `ADMIN_PASSWORD`, Worker secrets) is a normal form at `/login`, shown as a box over a dimmed, blurred copy of the app frame (empty, with no data behind it). A correct login sets a session cookie that lasts 12 hours (`__Host-` prefixed, `Secure`, `HttpOnly`, `SameSite=Strict`, so scripts in the page cannot read it and other sites cannot send it). The cookie holds only an expiry and a signature, never the password. The signing key is random and kept in the database, and the signature is tied to the current user name and password, so changing either one signs everyone out. **Sign out** is in the sidebar. Pages opened without a session redirect to `/login` and return you to where you were.
+- **Sign-in page.** The admin login (`ADMIN_USER` / `ADMIN_PASSWORD`: Worker secrets on Cloudflare, environment variables or a Secret when self-hosted) is a normal form at `/login`, shown as a box over a dimmed, blurred copy of the app frame (empty, with no data behind it). A correct login sets a session cookie that lasts 12 hours (`__Host-` prefixed, `Secure`, `HttpOnly`, `SameSite=Strict`, so scripts in the page cannot read it and other sites cannot send it). The cookie holds only an expiry and a signature, never the password. The signing key is random and kept in the database, and the signature is tied to the current user name and password, so changing either one signs everyone out. **Sign out** is in the sidebar. Pages opened without a session redirect to `/login` and return you to where you were. Self-hosted over plain `http://` (other than `localhost`) only works with `ALLOW_INSECURE_HTTP=true`, which uses a cookie without `Secure`, and Admin shows a warning.
 - **Scripts still work.** Sending the username and password as HTTP Basic Auth (`curl -u user:pass https://.../export/reports`) is accepted as before, so monitoring and exports keep working. Use the HTTPS URL.
-- Mailbox credentials entered on `/admin` are encrypted with AES-GCM using `CONFIG_ENCRYPTION_KEY`, a write-only Worker secret, before they reach D1. They are never sent back to the browser. **Do not rotate or lose that key without re-entering the mailbox password**: the stored value can no longer be decrypted.
+- Mailbox credentials entered on `/admin` are encrypted with AES-GCM using `CONFIG_ENCRYPTION_KEY` (a Worker secret, environment variable or Kubernetes Secret) before they reach the database. They are never sent back to the browser. **Do not rotate or lose that key without re-entering the mailbox password**: the stored value can no longer be decrypted.
 - State-changing requests from `/admin` require a custom request header that a cross-site form cannot send (CSRF protection).
-- The container is only reachable through the Worker. The one thing the Worker fetches from it on request is the original report XML/JSON, and that always requires the admin login, even when the dashboard is public. Files are served as plain text with a restrictive `Content-Security-Policy`.
+- The parser is only reachable through the app: the Cloudflare container has no public address, and self-hosted parsers listen only on `127.0.0.1` on a random port. They are given only their own mailbox settings, never the admin password, encryption key or webhooks. The one thing the app fetches from a parser on request is the original report XML/JSON, and that always requires the admin login, even when the dashboard is public. Files are served as plain text with a restrictive `Content-Security-Policy`.
+- **Self-hosted images** run as an unprivileged user, ship no default password (the app refuses to start without one), and on Kubernetes meet the "restricted" Pod Security profile with a read-only root filesystem.
 - Webhook URLs are credentials: they are stored encrypted (as one list) like the mailbox password, never shown back in the browser, and never written to logs or error messages. Only a masked form is displayed.
 - Alert text includes domain and reporter names taken from third-party reports, so everything sent to Slack is escaped. A crafted report cannot inject links or mentions (such as `@channel`).
 - Exports, the summary report and the original report files always require the admin login, and CSV cells that could run as spreadsheet formulas are neutralised.
 - JSON webhook signing secrets are stored encrypted with the webhook list and are never shown again.
-- **Login throttling.** Ten wrong passwords from one address within 15 minutes lock that address out for 15 minutes (HTTP 429, with `Retry-After`). IPv6 clients are grouped by /64. The sign-in form and Basic Auth share one counter. Requests with no credentials are not counted, checking an existing session cookie is not throttled, and the public dashboard is unaffected. The sign-in page gives the same message for a wrong user name and a wrong password.
+- **Login throttling.** Ten wrong passwords from one address within 15 minutes lock that address out for 15 minutes (HTTP 429, with `Retry-After`). IPv6 clients are grouped by /64. Behind a reverse proxy, set `TRUST_PROXY=true` so the lockout sees the real client address (only the last `X-Forwarded-For` entry, the one your proxy added, is believed); a client-supplied `cf-connecting-ip` header is always discarded. The sign-in form and Basic Auth share one counter. Requests with no credentials are not counted, checking an existing session cookie is not throttled, and the public dashboard is unaffected. The sign-in page gives the same message for a wrong user name and a wrong password.
 - **Content-Security-Policy.** Pages run only scripts that carry a per-response random nonce, can contact only their own origin, and cannot be framed. Report data is escaped as well, so this is a second layer: markup injected through a crafted report still could not run. The Chart.js, Leaflet and Inter files are served from the app itself (`public/vendor`), so the dashboard makes no requests to CDNs; the Sender map page alone also loads OpenStreetMap tiles. Other headers set on every response: `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Strict-Transport-Security`, Cross-Origin policies.
 - The admin credentials are compared in constant time.
 - The public-dashboard switch defaults to **off**.
@@ -428,11 +478,12 @@ Found a vulnerability? Please report it privately through GitHub's *Security →
 
 ## Limitations
 
-- **One container instance.** Fine for hundreds of domains' worth of reports; not horizontally scaled. Several mailboxes share it by taking turns (see above).
+- **One instance, on every platform.** Fine for hundreds of domains' worth of reports; not horizontally scaled. On Cloudflare several mailboxes share one container by taking turns; self-hosted there is one parser per mailbox, but still a single app instance (one replica on Kubernetes, because the database is a SQLite file).
+- **Self-hosted specifics.** Backups are yours to schedule. The database must be on local or block storage, not NFS. HTTPS is provided by your reverse proxy or ingress. There is no published container image yet, so you build it from this repository. A long query (the year or all-time Overview of a very large fleet) holds up other requests while it runs.
 - **Original XML/JSON comes from the parser**, which re-reads the report's mailbox. If a report email has been deleted or moved out of the configured folder, the parsed data stays in the dashboard but the original file is no longer available.
 - **No forensic (RUF) reports.** The upstream parser does not support them, and large receivers have mostly stopped sending them.
 - **Geolocation uses [ip-api.com](https://ip-api.com)**, whose free tier is **non-commercial only** and rate-limited, so new addresses are resolved gradually. For commercial use, get a plan from them or swap the lookup.
-- **Sync de-duplication** compares the container's report list against every report already in D1. That is fine for tens of thousands of reports and worth revisiting well beyond that.
+- **Very late reports.** Each sync checks the last 30 days of reports, and older history is walked in steps once a month, so a report that arrives more than 30 days after its period is picked up at the next monthly pass (see Scale).
 - **Exports are capped at 100,000 rows** each (narrow the time range or domains for more).
 - **Alerts cover DMARC and sync health, not TLS failures yet**, and are delivered only to Slack-compatible webhooks (no direct email).
 
@@ -442,7 +493,7 @@ Email delivery and TLS failure alerts · enforcement rollout tracking over time 
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `npm run typecheck` and `npm test` before submitting. Schema changes are made by **appending** a migration in `src/migrations.ts`; never edit one that has shipped.
+Issues and pull requests are welcome. Run `npm run typecheck` and `npm test` before submitting. Schema changes are made by **appending** a migration in `src/migrations.ts`; never edit one that has shipped. Changes to `deploy/` should pass `npm run e2e:docker` and `npm run e2e:k8s`; CI runs both.
 
 ## License
 
