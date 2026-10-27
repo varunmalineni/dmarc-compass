@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest something that would make it more useful.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation first. A good solution often differs from the first idea.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like it to do?
+  - type: textarea
+    id: scale
+    attributes:
+      label: How big is your setup?
+      description: Roughly how many domains and mailboxes, and where you run it. It helps to judge cost and effect.

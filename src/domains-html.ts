@@ -29,7 +29,7 @@ function row(r: DomainRow, f: Filters, url: URL, editing: TagEditing): string {
   const href = withFilters("/", { ...f, domains: [r.domain] });
   return `<tr class="clickable" data-href="${escapeHtml(href)}">
     <td><a href="${href}" style="color:inherit;font-weight:600;text-decoration:none;white-space:nowrap">${escapeHtml(r.domain)}</a></td>
-    <td>${tagChips(r.tags, url, 4, editing.editable ? r : undefined, editing.colors)}</td>
+    <td class="tags-cell">${tagChips(r.tags, url, 4, editing.editable ? r : undefined, editing.colors)}</td>
     <td>${r.policy ? `<code>p=${escapeHtml(r.policy)}</code>` : '<span class="muted">&ndash;</span>'}</td>
     <td><span class="badge ${s.tone}">${s.label}</span></td>
     <td class="num">${fmtNumber(r.total)}</td>

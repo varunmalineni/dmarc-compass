@@ -143,7 +143,18 @@ export const FILTER_BAR_JS = `
     panel.hidden=false;trigger.setAttribute('aria-expanded','true');
     if(!builder)builder=DCFilter.mount(document.getElementById('fb-root'),{ops:data.ops,fields:['tag','domain','policy'],tags:data.tags,initial:data.expr,onChange:function(){msg.textContent=''}});
     if(builder.count()===0){document.querySelector('#fb-root .fb-add').click()}
+    place();
   }
+  /* The panel hangs from the Filter button's right edge. When the top bar wraps (a long filter description) the button
+     moves left and that would push the panel off the screen, so keep it inside the window. */
+  function place(){
+    panel.style.left='';panel.style.right='';
+    var r=panel.getBoundingClientRect(),w=document.documentElement.clientWidth;
+    if(r.left<8)panel.style.right=(parseFloat(getComputedStyle(panel).right)||0)+(r.left-8)+'px';
+    r=panel.getBoundingClientRect();
+    if(r.right>w-8)panel.style.right=(parseFloat(getComputedStyle(panel).right)||0)+(r.right-(w-8))+'px';
+  }
+  window.addEventListener('resize',function(){if(!panel.hidden)place()});
   trigger.addEventListener('click',function(e){e.stopPropagation();panel.hidden?open():close()});
   panel.addEventListener('click',function(e){e.stopPropagation()});
   document.addEventListener('click',close);

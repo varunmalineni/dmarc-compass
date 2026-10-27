@@ -2,7 +2,7 @@
 
 This is the full guide for Docker, Docker Compose and a plain Linux VM (install Docker and use the Compose file).
 For Kubernetes see [deploy/kubernetes](../deploy/kubernetes/README.md). For Cloudflare see the
-[README](../README.md#cloudflare).
+[Cloudflare guide](cloudflare.md).
 
 The container holds the app and the unmodified upstream parser. The app starts **one parser per mailbox**, side by
 side, and keeps its data in a SQLite file in a volume. The dashboards, alerts, sign-in and settings are the same code
@@ -25,7 +25,7 @@ Open <http://localhost:8080>. In `.env` you must set:
 | `ADMIN_USER`, `ADMIN_PASSWORD` | The sign-in. At least 10 characters; there is no default password. |
 | `CONFIG_ENCRYPTION_KEY` | Encrypts mailbox passwords in the database. Create one with `openssl rand -base64 32` and keep a copy: without it, saved mailbox passwords cannot be read. |
 
-If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, as described in the [main README](../README.md#docker).
+If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, as described in the [README](../README.md#docker).
 
 ## Plain `docker run`
 
@@ -74,7 +74,7 @@ dmarc.example.com {
 }
 ```
 
-I tried exactly this (Caddy in front of the container, `TRUST_PROXY=true`): signing in over HTTPS gives the secure cookie, and the lockout counts the real client even if a client sends its own `X-Forwarded-For`. It is not part of the automated tests. With nginx or Traefik, make sure the proxy sets those two headers. Only turn `TRUST_PROXY` on when traffic really arrives through a proxy you control, because it makes the sign-in lockout believe the address the proxy reports.
+This setup was tried by hand (Caddy in front of the container, `TRUST_PROXY=true`): signing in over HTTPS gives the secure cookie, and the lockout counts the real client even if a client sends its own `X-Forwarded-For`. It is not part of the automated tests. With nginx or Traefik, make sure the proxy sets those two headers. Only turn `TRUST_PROXY` on when traffic really arrives through a proxy you control, because it makes the sign-in lockout believe the address the proxy reports.
 
 For a quick look from another computer on a trusted network you can set `ALLOW_INSECURE_HTTP=true` instead; the password and session then travel unencrypted, and Admin shows a warning.
 

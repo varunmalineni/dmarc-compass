@@ -255,6 +255,7 @@ code { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-si
 .rate-num { font-weight: 700; font-size: 12.5px; width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
 .rate-num.good { color: var(--good); } .rate-num.warn { color: var(--warn); } .rate-num.bad { color: var(--bad); }
 .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.data td.tags-cell { min-width: 185px; }
 .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); text-decoration: none; white-space: nowrap; border: 1px solid transparent; }
 a.tag:hover { border-color: var(--accent); }
 .head-tools .btn { white-space: nowrap; }

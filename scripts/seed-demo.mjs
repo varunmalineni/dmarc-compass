@@ -248,8 +248,25 @@ out.push(
   `INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('public_dashboard', 'true', ${now}), ('last_sync', '${JSON.stringify({ at: now - 6 * 60, ok: true, summary: "3 new DMARC reports, 0 new TLS reports" })}', ${now});`,
 );
 
+// Tags, an automatic rule and colours, so the Tags page and the filter have something to show.
+const TAGS = {
+  emea: ["fernwood-hotels", "meridian-health", "atlas-legal", "zephyr-travel", "ironbridge-steel", "tidewater-credit", "pinecrest-schools"],
+  us: ["northwind-outdoors", "lumen-analytics", "harborline-freight", "cobalt-robotics", "kestrel-capital", "nimbus-cloud", "vantage-realty"],
+  regulated: ["meridian-health", "tidewater-credit", "kestrel-capital", "atlas-legal"],
+  marketing: ["northwind-outdoors", "bluepine-bakery", "orbit-learning", "opal-cosmetics", "zephyr-travel", "quill-and-ink"],
+  review: ["zephyr-travel", "fernwood-hotels", "opal-cosmetics"],
+};
+const tagRows = Object.entries(TAGS).flatMap(([tag, names]) => names.map((n) => `(${q(n + ".example")}, ${q(tag)})`));
+const tagColors = { emea: "blue", us: "teal", regulated: "purple", marketing: "pink", review: "amber", shops: "green" };
+const tagRules = [{ id: "demo-shops", tag: "shops", expr: { any: ["bakery", "kitchen", "cosmetics", "florist"].map((v) => ({ field: "domain", op: "contains", value: v })) } }];
+out.push("DELETE FROM domain_tags;");
+out.push("INSERT INTO domain_tags (domain, tag) VALUES\n" + tagRows.join(",\n") + ";");
+out.push(
+  `INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('tag_colors', ${q(JSON.stringify(tagColors))}, ${now}), ('tag_rules', ${q(JSON.stringify(tagRules))}, ${now});`,
+);
+
 const sql = out.join("\n") + "\n";
-process.stderr.write(`demo data: ${DOMAINS.length} domains, ${reports.length} reports, ${records.length} records, ${tlsReports.length} TLS reports\n`);
+process.stderr.write(`demo data: ${DOMAINS.length} domains, ${Object.keys(TAGS).length + 1} tags, ${reports.length} reports, ${records.length} records, ${tlsReports.length} TLS reports\n`);
 
 if (!process.argv.includes("--apply")) {
   process.stdout.write(sql);

@@ -1,11 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const FILES = ["README.md", "docs/self-hosting.md", "deploy/kubernetes/README.md"];
+const FILES = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "NOTICE.md",
+  "deploy/kubernetes/README.md",
+  ...readdirSync(join(root, "docs")).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`),
+];
 const read = (f: string) => readFileSync(join(root, f), "utf8");
 
 // GitHub's rule for turning a heading into an anchor.
@@ -36,4 +43,15 @@ test("the README names every way to run it and points at its guide", () => {
   const readme = read("README.md");
   for (const heading of ["### Cloudflare", "### Docker", "### Kubernetes"]) assert.ok(readme.includes(heading), heading);
   assert.ok(readme.includes("docs/self-hosting.md") && readme.includes("deploy/kubernetes/README.md"));
+});
+
+test("every document is reachable from the README", () => {
+  const readme = read("README.md");
+  const missing = FILES.filter((f) => f !== "README.md" && !readme.includes(f) && f !== "NOTICE.md").filter((f) => !readme.includes(f.replace(/^docs\//, "docs/")));
+  assert.deepEqual(missing, []);
+});
+
+test("no document speaks in the first person", () => {
+  const offenders = FILES.filter((f) => /(^|[\s(*])I (tested|measured|tried|did|have|will|built|think|believe|recommend)\b/m.test(read(f).replace(/```[\s\S]*?```/g, "")));
+  assert.deepEqual(offenders, []);
 });
