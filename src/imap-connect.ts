@@ -65,8 +65,8 @@ export async function probeMailbox(
       reply = await readUntil(reader, (t) => taggedStatus(t, "a1") !== null, 15_000);
     }
     let auth = taggedStatus(reply, "a1");
-    if (auth?.status === "BAD") {
-      // PLAIN is not offered: use LOGIN.
+    // PLAIN is not offered (BAD, or NO naming the mechanism): use LOGIN.
+    if (auth?.status === "BAD" || (auth?.status === "NO" && /mechanism|not supported|unsupported|not available|disabled/i.test(auth.text))) {
       await send(`a1b LOGIN ${quoted(m.user)} ${quoted(m.password)}`);
       auth = taggedStatus(await readUntil(reader, (t) => taggedStatus(t, "a1b") !== null, 15_000), "a1b");
     }

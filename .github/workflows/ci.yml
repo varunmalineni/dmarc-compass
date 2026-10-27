@@ -25,3 +25,14 @@ jobs:
           node --check scripts/wrangler.mjs
           node --check scripts/vendor.mjs
           python3 -m py_compile scripts/test-imap.py
+
+  # The self-hosted image, end to end, with the real parser and a real IMAP server.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm run e2e:docker

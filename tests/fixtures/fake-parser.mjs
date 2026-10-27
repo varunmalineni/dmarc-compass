@@ -12,6 +12,18 @@ const env = process.env;
 const started = Date.now();
 const readDelay = Number(env.FAKE_READ_DELAY_MS || 0);
 
+// FAKE_FAIL_ONCE_FILE: the first parser to start reports a failed first read (and never finishes it);
+// the file records that it did, so a restarted one succeeds. Like the real parser, it keeps running.
+let failing = false;
+if (env.FAKE_FAIL_ONCE_FILE) {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  if (!existsSync(env.FAKE_FAIL_ONCE_FILE)) {
+    writeFileSync(env.FAKE_FAIL_ONCE_FILE, "failed once");
+    failing = true;
+    console.log(`2026-10-26T20:59:15.136233Z ERROR Failed background update: Failed to get mails: Connection refused (os error 111)`);
+  }
+}
+
 if (env.FAKE_EXIT_AFTER_MS) {
   console.error("IMAP login failed: authentication rejected");
   setTimeout(() => process.exit(3), Number(env.FAKE_EXIT_AFTER_MS));
@@ -26,7 +38,7 @@ const server = createServer((req, res) => {
     return;
   }
   const json = (o) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(o));
-  if (req.url === "/summary") return json({ last_update: Date.now() - started >= readDelay ? 1_800_000_000 : null });
+  if (req.url === "/summary") return json({ last_update: !failing && Date.now() - started >= readDelay ? 1_800_000_000 : null });
   const end = Math.floor(Date.now() / 1000) - 7200;
   const hash = `h-${env.IMAP_USER}`;
   const domain = String(env.IMAP_USER).split("@")[1] || "example.com";

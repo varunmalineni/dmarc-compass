@@ -110,6 +110,35 @@ test("a parser that keeps crashing gives a clear error with its last message, no
   } finally { await pool.stopAll(); }
 });
 
+test("a first read that fails is reported at once with the reason, and the next request tries again with a fresh parser", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const flag = join(mkdtempSync(join(tmpdir(), "fail-once-")), "flag");
+  const { pool } = await setup({ FAKE_FAIL_ONCE_FILE: flag });
+  try {
+    const t0 = Date.now();
+    const r1 = await pool.lease(mb("a"), { purpose: "sync", timeoutMs: 20000, onlyMailbox: false });
+    assert.equal(r1.ok, false);
+    if (!r1.ok) assert.match(r1.error, /Could not read the mailbox: .*Connection refused/);
+    assert.ok(Date.now() - t0 < 5000, "did not wait out the timeout");
+    const r2 = await lease(pool, mb("a"));
+    assert.ok((await whoami(r2.client)).pid > 0);
+    assert.equal(pool.running().length, 1, "the failed parser was replaced, not left running beside it");
+  } finally { await pool.stopAll(); }
+});
+
+test("a read that merely takes long is not mistaken for a failure and not restarted", async () => {
+  const { pool, logs } = await setup({ FAKE_READ_DELAY_MS: "700" });
+  try {
+    const short = await pool.lease(mb("a"), { purpose: "sync", timeoutMs: 200, onlyMailbox: false });
+    assert.equal(short.ok, false);
+    const long = await lease(pool, mb("a"));
+    assert.ok(long.ok);
+    assert.equal(logs.filter((l) => l.includes("started on port")).length, 1, "the same parser kept reading");
+  } finally { await pool.stopAll(); }
+});
+
 test("a mailbox that never finishes reading times out with the usual message", async () => {
   const { pool } = await setup({ FAKE_READ_DELAY_MS: "60000" });
   try {

@@ -4,7 +4,7 @@
 //   ADMIN_USER=... ADMIN_PASSWORD=... CONFIG_ENCRYPTION_KEY=... node dist/server.mjs
 
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { handle, runScheduled, type Env } from "../app";
@@ -20,6 +20,21 @@ import { connectTcp } from "./tcp";
 const here = dirname(fileURLToPath(import.meta.url));
 const TICK_MS = 5 * 60 * 1000;
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+
+// node dist/server.mjs --backup /data/backup.db : a consistent copy of the database, safe while the server runs.
+const backupAt = process.argv.indexOf("--backup");
+if (backupAt !== -1) {
+  const target = process.argv[backupAt + 1];
+  if (!target || existsSync(target)) {
+    console.error(target ? `${target} already exists; choose a new file name.` : "Usage: node dist/server.mjs --backup /path/to/backup.db");
+    process.exit(2);
+  }
+  const source = new SqliteD1(join(process.env.DATA_DIR?.trim() || "./data", "dmarc-compass.db"));
+  source.raw.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  source.close();
+  console.log(`Backup written to ${target}. Keep your CONFIG_ENCRYPTION_KEY with it: saved mailbox passwords cannot be read without it.`);
+  process.exit(0);
+}
 
 const parsed = readConfig(process.env, { publicDir: join(here, "..", "public") });
 if (!parsed.ok) {

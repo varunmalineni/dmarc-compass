@@ -47,6 +47,11 @@ interface Entry {
   client: ParserClient;
   exited: { code: number | null; signal: NodeJS.Signals | null } | null;
   tail: string[];
+  /** The parser has answered at least once with a finished read. */
+  everRead: boolean;
+  /** Its first read failed (wrong login, server down). It would wait out its whole interval before trying
+   * again, so the next request starts a fresh one instead. */
+  readFailed: string | null;
 }
 
 const TAIL_LINES = 6;
@@ -104,7 +109,7 @@ export class ParserPool implements ParserHost {
       const interval = containerIntervalSeconds(await getSyncMinutes(this.o.env.DB));
       const fp = await fingerprint(mailbox, interval);
       const current = this.entries.get(mailbox.id);
-      if (current && current.fp === fp && !current.exited) return current;
+      if (current && current.fp === fp && !current.exited && !current.readFailed) return current;
       if (current) await this.kill(current);
       return this.start(mailbox, interval, fp);
     });
@@ -117,7 +122,7 @@ export class ParserPool implements ParserHost {
 
     // The parser gets only what it needs: never this app's admin password, encryption key or webhook.
     const inherited: Record<string, string> = {};
-    for (const k of ["PATH", "TZ", "LANG", "TMPDIR", "HOME"]) if (process.env[k]) inherited[k] = process.env[k] as string;
+    for (const k of ["PATH", "TZ", "LANG", "TMPDIR", "HOME", "DNS_SERVER"]) if (process.env[k]) inherited[k] = process.env[k] as string;
     const env: Record<string, string> = {
       ...inherited,
       ...containerEnv(mailbox),
@@ -137,11 +142,13 @@ export class ParserPool implements ParserHost {
     Object.assign(env, this.o.extraEnv);
 
     const proc = spawn(this.o.command, this.o.args ?? [], { env, stdio: ["ignore", "pipe", "pipe"] });
-    const entry: Entry = { id: mailbox.id, fp, port, proc, client: loopbackClient(port), exited: null, tail: [] };
+    const entry: Entry = { id: mailbox.id, fp, port, proc, client: loopbackClient(port), exited: null, tail: [], everRead: false, readFailed: null };
 
     const onData = (chunk: Buffer) => {
       for (const line of chunk.toString().split(/\r?\n/)) {
         if (!line.trim()) continue;
+        const failed = line.match(/\bERROR\b.*?Failed background update:\s*(.*)$/);
+        if (failed && !entry.everRead) entry.readFailed = failed[1].slice(0, 240);
         entry.tail.push(line.slice(0, 300));
         if (entry.tail.length > TAIL_LINES) entry.tail.shift();
         this.log(`[parser ${mailbox.id}] ${line}`);
@@ -181,8 +188,10 @@ export class ParserPool implements ParserHost {
     } catch (err) {
       return { ok: false, error: `Could not start the report reader: ${err instanceof Error ? err.message : err}` };
     }
-    const ready = await waitUntilRead(entry.client, this.o.env, opts.timeoutMs, this.o.pollMs, () => entry.exited !== null);
+    const ready = await waitUntilRead(entry.client, this.o.env, opts.timeoutMs, this.o.pollMs, () => entry.exited !== null || entry.readFailed !== null);
+    if (ready.ok) entry.everRead = true;
     if (!ready.ok) {
+      if (entry.readFailed) return { ok: false, error: `Could not read the mailbox: ${entry.readFailed}` };
       const why = entry.exited ? ` The reader stopped (${entry.exited.signal ?? `exit code ${entry.exited.code}`}).` : "";
       const last = entry.tail.length ? ` Last message: ${entry.tail[entry.tail.length - 1]}` : "";
       return { ok: false, error: ready.error + why + last };

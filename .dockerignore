@@ -1,0 +1,16 @@
+# Keep the build context small, and keep anything personal out of the image.
+.git
+.github
+node_modules
+.wrangler
+dist
+data
+tests
+docs
+scripts/bench
+wrangler.local.*
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

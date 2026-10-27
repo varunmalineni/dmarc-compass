@@ -1,0 +1,37 @@
+# dmarc-compass with Docker Compose.
+#
+#   cp .env.example .env      # then edit it: admin password and encryption key
+#   docker compose up -d --build
+#   open http://localhost:8080
+#
+# The database is kept in the "dmarc-data" volume, so it survives upgrades and restarts.
+services:
+  dmarc-compass:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    image: dmarc-compass:local
+    restart: unless-stopped
+    ports:
+      # Only this computer can reach it. To serve other machines, put a reverse proxy with HTTPS
+      # in front (see the README) rather than opening the port to everyone.
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Required. Compose stops with the message below if they are missing.
+      ADMIN_USER: ${ADMIN_USER:?Set ADMIN_USER in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env (10 or more characters)}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?Set CONFIG_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+      # Optional.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-false}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      DNS_SERVER: ${DNS_SERVER:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - dmarc-data:/data
+    # The parsers hold each mailbox in memory. Raise this for large mailboxes or many of them.
+    mem_limit: 1g
+
+volumes:
+  dmarc-data:
