@@ -70,6 +70,9 @@ export const REPORTS = [
   { org: "Yahoo", id: "e2e-y-1", domain: "alpha.example", ageDays: 2, ips: [["203.0.113.7", 11, true]] },
   { org: "Microsoft Corporation", id: "e2e-m-1", domain: "beta.example", ageDays: 1, ips: [["198.51.100.20", 25, true]] },
 ];
+// Failing mail from a sender not seen before, one report per domain, for the routing checks.
+export const FAIL_ALPHA = { org: "google.com", id: "e2e-g-3", domain: "alpha.example", ageDays: 1, ips: [["203.0.113.150", 30, false]] };
+export const FAIL_BETA = { org: "google.com", id: "e2e-g-4", domain: "beta.example", ageDays: 1, ips: [["198.51.100.150", 30, false]] };
 export const LATE = { org: "google.com", id: "e2e-g-2", domain: "beta.example", ageDays: 1, ips: [["198.51.100.21", 9, true]] };
 
 /** Puts messages into the test mailbox over plain IMAP (login dmarc / secretpw). */
@@ -145,8 +148,17 @@ export const PARSER_ENV_SCRIPT =
 export const BACKUP_COUNT_SCRIPT =
   "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/data/e2e-backup.db',{readOnly:true});console.log(d.prepare('select count(*) n from dmarc_reports').get().n)";
 
+/** A small web server inside the app's container that records what webhooks send, so routing can be checked end to end. */
+const SINK_PORT = 9911;
+const SINK_LOG = "/data/e2e-sink.log";
+const SINK_SOURCE = `const http=require('http'),fs=require('fs');http.createServer((q,r)=>{let b='';q.on('data',d=>b+=d);q.on('end',()=>{fs.appendFileSync(${JSON.stringify(SINK_LOG)},JSON.stringify({path:q.url,body:JSON.parse(b)})+'\\n');r.end('ok')})}).listen(${SINK_PORT},'127.0.0.1')`;
+const START_SINK = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(SINK_SOURCE)}],{detached:true,stdio:'ignore'}).unref()`;
+const PROBE_SINK = `require('net').connect(${SINK_PORT},'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))`;
+const READ_SINK = `const fs=require('fs');process.stdout.write(fs.existsSync(${JSON.stringify(SINK_LOG)})?fs.readFileSync(${JSON.stringify(SINK_LOG)},'utf8'):'')`;
+
 /**
  * Hooks a driver provides (all async):
+ *   exec(...command)              -> stdout of a command run inside the app's container
  *   imapPort                      host port of the test IMAP server
  *   refusesWithoutSettings()      -> { ok, detail } | null
  *   healthy()                     -> boolean | null
@@ -252,6 +264,50 @@ export async function runScenario(h, c) {
   check("a backup made while running holds all 4 reports", copied === "4", copied);
   check("a backup never overwrites an existing file", (await h.backupAgainStatus()) === 2);
 
+  // ---- sending alerts and digests to the right webhook
+  await h.exec("node", "-e", START_SINK);
+  await until("the test webhook receiver", async () => { await h.exec("node", "-e", PROBE_SINK); return true; }, 20000, 500);
+  const sinkUrl = (name) => `http://127.0.0.1:${SINK_PORT}/${name}`;
+  const hasTag = (tag) => ({ all: [{ field: "tag", op: "has", value: tag }] });
+  for (const [name, filter] of [["all", null], ["emea", hasTag("emea")], ["bx", hasTag("bx")], ["nobody", hasTag("nobody")]]) {
+    const added = await c.admin({ action: "webhook_add", url: sinkUrl(name), name, type: "json", filter });
+    check(`webhook "${name}" added${filter ? " with a filter" : ""}`, added.status === 200, JSON.stringify(added).slice(0, 200));
+  }
+  const badFilter = await c.admin({ action: "webhook_add", url: sinkUrl("bad"), type: "json", filter: { all: [{ field: "tag", op: "nonsense", value: "x" }] } });
+  check("a filter that makes no sense is refused", badFilter.status === 400, JSON.stringify(badFilter).slice(0, 200));
+  const hookRows = (await c.admin({ action: "notify_state" })).json?.hooks ?? [];
+  check("the Admin page lists each webhook's filter in words", hookRows.find((x) => x.name === "emea")?.filterText === "has tag emea" && hookRows.find((x) => x.name === "all")?.filterText === null, JSON.stringify(hookRows.map((x) => x.filterText)));
+
+  await appendMessages(h.imapPort, [mail(FAIL_ALPHA), mail(FAIL_BETA)]);
+  await c.admin({ action: "sync_schedule_save", minutes: 10 });
+  const failing = await c.admin({ action: "sync" });
+  check("two reports with failing mail from new senders are read", failing.status === 200 && failing.json?.newReports === 2, JSON.stringify(failing).slice(0, 300));
+  const readSink = async () => (await h.exec("node", "-e", READ_SINK)).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const alertsTo = async (name) => (await readSink()).filter((x) => x.path === `/${name}` && x.body.event === "alerts").flatMap((x) => x.body.alerts.map((a) => a.domain));
+  await until("the alerts to arrive", async () => (await alertsTo("all")).length >= 2, 20000, 500);
+  check("the webhook with no filter gets the alerts for both domains", JSON.stringify((await alertsTo("all")).sort()) === '["alpha.example","beta.example"]', JSON.stringify(await alertsTo("all")));
+  check("the emea webhook gets only alpha.example", JSON.stringify(await alertsTo("emea")) === '["alpha.example"]', JSON.stringify(await alertsTo("emea")));
+  check("the bx webhook (an automatic rule's tag) gets only beta.example", JSON.stringify(await alertsTo("bx")) === '["beta.example"]', JSON.stringify(await alertsTo("bx")));
+  check("a webhook whose filter matches nothing gets nothing", (await readSink()).filter((x) => x.path === "/nobody").length === 0);
+  const emeaMessage = (await readSink()).find((x) => x.path === "/emea" && x.body.event === "alerts");
+  check("a filtered message says how it was scoped", emeaMessage?.body.scope?.filter === "has tag emea");
+
+  const before = (await readSink()).length;
+  const resync = await c.admin({ action: "sync" });
+  check("another sync sends nothing again", resync.status === 200 && (await readSink()).length === before);
+
+  const digest = await c.admin({ action: "digest_now" });
+  check("the digest is sent now", digest.status === 200, JSON.stringify(digest).slice(0, 300));
+  const digests = (await readSink()).filter((x) => x.body.event === "digest");
+  const digestFor = (name) => digests.find((x) => x.path === `/${name}`)?.body;
+  check("the digest reaches the webhooks that have domains, and not the one with none", ["all", "emea", "bx"].every((n) => digestFor(n)) && !digestFor("nobody"), JSON.stringify(digests.map((x) => x.path)));
+  check("each digest covers its own domains (2, 1 and 1)", [digestFor("all")?.domains.total, digestFor("emea")?.domains.total, digestFor("bx")?.domains.total].join() === "2,1,1", JSON.stringify([digestFor("all")?.domains, digestFor("emea")?.domains, digestFor("bx")?.domains]));
+  check("and says so", digestFor("emea")?.scope?.filter === "has tag emea" && digestFor("emea")?.scope?.domains === 1 && digestFor("all")?.scope === null);
+  const emeaMessages = digestFor("emea")?.totals.messages, allMessages = digestFor("all")?.totals.messages;
+  check("the totals follow the scope", typeof emeaMessages === "number" && emeaMessages < allMessages, JSON.stringify([emeaMessages, allMessages]));
+  const nobody = (await c.admin({ action: "notify_state" })).json?.hooks.find((x) => x.name === "nobody");
+  check("the webhook that was skipped says why", /no domain matches/.test(nobody?.result?.detail ?? ""), JSON.stringify(nobody?.result));
+
   // ---- changing the admin login from the Admin page
   const other = createClient();
   other.base = c.base;
@@ -275,11 +331,13 @@ export async function runScenario(h, c) {
   check("stops cleanly on SIGTERM (exit 0, within 10 s)", r.exitCode === "0" && r.seconds < 10, `exit ${r.exitCode} after ${r.seconds}s`);
   for (const extra of r.extra ?? []) check(extra.name, extra.ok, extra.detail);
   check("the sign-in session survives a restart", (await c.http("/export/reports?range=all")).status === 200);
-  check("all 4 reports are still there after the restart", (await c.csvRows("reports")) === 4);
+  check("all 6 reports are still there after the restart", (await c.csvRows("reports")) === 6);
   const after = await c.admin({ action: "sync" });
   check("sync works again after the restart (parsers start again)", after.status === 200 && after.json?.mailboxes?.[0]?.ok === true, JSON.stringify(after).slice(0, 300));
-  check("and finds nothing duplicated", (await c.csvRows("reports")) === 4);
-  check("tags and rules survive the restart (beta.example now has its second report)", (await c.csvRows("reports", "tag=emea")) === 2 && (await c.csvRows("reports", "tag=bx")) === 2);
+  check("and finds nothing duplicated", (await c.csvRows("reports")) === 6);
+  check("tags and rules survive the restart", (await c.csvRows("reports", "tag=emea")) === 3 && (await c.csvRows("reports", "tag=bx")) === 3);
+  const hooksAfter = (await c.admin({ action: "notify_state" })).json?.hooks ?? [];
+  check("webhooks keep their filters over a restart", hooksAfter.find((x) => x.name === "emea")?.filterText === "has tag emea" && hooksAfter.find((x) => x.name === "bx")?.filterText === "has tag bx" && hooksAfter.find((x) => x.name === "all")?.filterText === null, JSON.stringify(hooksAfter.map((x) => x.filterText)));
 
   check("the changed login survives the restart", (await createClient().withBase(c.base).signIn("owner", NEW_PASSWORD)) && !(await createClient().withBase(c.base).signIn("admin", PASSWORD)));
 

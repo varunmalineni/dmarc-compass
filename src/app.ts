@@ -54,7 +54,7 @@ import { clearCookie, cookieName, makeToken, readCookie, requesterKind, safeNext
 import { renderLogin } from "./login-html";
 import { parseList, scopeLabel, scopeSlug, rangeLabel, withFilters } from "./filters";
 import { describe } from "./domain-filter";
-import { loadFilters } from "./tags";
+import { loadFilters, tagCounts } from "./tags";
 import { overview as tagsOverview, tagsAction } from "./tags-admin";
 import { renderTagsPage } from "./tags-page";
 import { layout } from "./shared-ui";
@@ -575,7 +575,7 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
       return res.ok ? notifyState() : jsonError(res.error, 400);
     }
     if (body.action === "webhook_add") {
-      const res = await addWebhook(env, { url: body.url, name: body.name, type: body.type, secret: body.secret, alerts: optBool(body.alerts), digest: optBool(body.digest) });
+      const res = await addWebhook(env, { url: body.url, name: body.name, type: body.type, secret: body.secret, alerts: optBool(body.alerts), digest: optBool(body.digest), filter: body.filter });
       return res.ok ? notifyState() : jsonError(res.error, 400);
     }
     if (body.action === "webhook_update") {
@@ -584,6 +584,7 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
         secret: typeof body.secret === "string" ? body.secret : undefined,
         alerts: optBool(body.alerts),
         digest: optBool(body.digest),
+        filter: body.filter,
       });
       return res.ok ? notifyState() : jsonError(res.error, 400);
     }
@@ -633,6 +634,7 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
       signedIn: await hasSession(request, env),
       account: accountView((await getAdminLogin(env.DB, env)) as AdminLogin),
       notify,
+      tags: (await tagCounts(env.DB)).map((t) => t.tag),
       mailboxes,
       sync,
       publicDashboard,

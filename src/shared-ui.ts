@@ -2,11 +2,11 @@
 // layout(), so navigation, global filters, theming and accessibility behave
 // the same everywhere.
 
-import { STYLES } from "./styles";
-import { RANGE_OPTIONS, DEFAULT_RANGE, withFilters, type Filters, type ListState } from "./filters";
-import { countConditions, encodeExpr, toWire } from "./domain-filter";
-import { FILTER_BAR_JS, FILTER_BUILDER_CSS, FILTER_BUILDER_JS, FILTER_OPS } from "./filter-builder-ui";
-import type { LastSync } from "./app-settings";
+import { STYLES } from "./styles.ts";
+import { RANGE_OPTIONS, DEFAULT_RANGE, withFilters, type Filters, type ListState } from "./filters.ts";
+import { countConditions, encodeExpr, toWire } from "./domain-filter.ts";
+import { FILTER_BAR_JS, FILTER_BUILDER_CSS, FILTER_BUILDER_JS, FILTER_OPS } from "./filter-builder-ui.ts";
+import type { LastSync } from "./app-settings.ts";
 
 export const BRAND = "dmarc-compass";
 

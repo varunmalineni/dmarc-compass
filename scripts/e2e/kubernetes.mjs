@@ -115,6 +115,7 @@ async function main() {
     },
     async healthy() { return ready(NS); },
     async uid() { return exec("id", "-u"); },
+    async exec(...a) { return exec(...a); },
     async parserEnvNames() { return exec("node", "-e", PARSER_ENV_SCRIPT); },
     async backup() {
       exec("node", "dist/server.mjs", "--backup", "/data/e2e-backup.db");

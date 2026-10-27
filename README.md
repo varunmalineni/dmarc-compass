@@ -329,6 +329,16 @@ Choose the **type** when you add a webhook. Each webhook is a row showing its ni
 
 **Preview alerts** shows what the rules would have reported over the last 7 days without sending anything, and **Send digest now** sends one immediately.
 
+**Send each webhook only some domains.** Open **Only some domains** when you add a webhook, or press **Choose domains** (or **Change**) on its row, and build a filter with the same builder as the filter bar: conditions on a **tag**, the **domain name** or its **policy**, joined by all-of (AND) or any-of (OR), with *Not*, in groups. For example, `has tag emea` for the EMEA channel, or `has tag prod and policy is not reject` for the domains still to be tightened. A webhook with a filter receives only the alerts for the domains that match, and its digest is built from those domains alone (totals, pass rate, status counts, most failing domains, policy changes, new failing senders), with a line at the top saying so. *Send everything* removes the filter.
+
+- Webhooks with the same filter are handled together, and one with no filter gets everything, so you can have an all-domains webhook beside the scoped ones.
+- The filter is read each time, so a domain that gets the tag later starts to count at once. Alerts from before that are not sent again.
+- Alerts about syncing are not about a domain, so they go to every webhook whatever its filter.
+- A webhook whose filter matches no domain is skipped for the digest, and its row says "nothing sent: no domain matches this webhook's filter".
+- An alert that no webhook's filter covers is dropped, not saved up for later.
+- Tags are for routing here, not for access: a webhook URL is still just a URL, and the dashboard's sign-in is what protects the data.
+- JSON webhooks get a `scope` field (`{ "filter": "has tag emea" }`, plus `domains` on a digest) or `null` when unfiltered.
+
 If every webhook that should receive an alert is unreachable, nothing is lost: an alert is only marked as sent once at least one webhook accepts it, so it is retried on the next run. If one of several is down, the others still deliver, and the failure is shown on that row. A notification problem never fails a sync.
 
 ### JSON webhooks

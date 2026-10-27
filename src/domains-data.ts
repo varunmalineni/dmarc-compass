@@ -3,10 +3,10 @@
 // is a few hundred KB of rows, and it lets us sort on derived values (risk,
 // readiness) that SQL pagination can't.
 
-import { effectiveTags, loadTagData, loadColors, countTags, ruleTags } from "./tags";
-import { domainFilter, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
-import { getLastSync } from "./app-settings";
-import type { Chrome } from "./shared-ui";
+import { effectiveTags, loadTagData, loadColors, countTags, ruleTags } from "./tags.ts";
+import { domainFilter, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters.ts";
+import { getLastSync } from "./app-settings.ts";
+import type { Chrome } from "./shared-ui.ts";
 
 const DAY = 86400;
 export const DOMAINS_PAGE_SIZE = 20;

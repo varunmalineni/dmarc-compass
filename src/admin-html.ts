@@ -1,4 +1,5 @@
 import { escapeHtml, fmtDate, fmtNumber, layout, panel, relTime, safeJson } from "./shared-ui";
+import { FILTER_OPS } from "./filter-builder-ui";
 import type { NotifyView } from "./notify";
 import type { MailboxesView } from "./mailbox-store";
 import { intervalLabel, PRESETS } from "./sync-schedule";
@@ -10,6 +11,8 @@ export interface AdminViewModel {
   signedIn?: boolean;
   account: AccountView;
   notify: NotifyView;
+  /** Existing tag names, offered while typing a webhook filter. */
+  tags?: string[];
   mailboxes: MailboxesView;
   sync: { minutes: number; presets: readonly number[]; nextAt: number | null; lastAttempt: number | null; tooSlow: boolean; tickGap: number | null };
   publicDashboard: boolean;
@@ -103,6 +106,11 @@ const CSS = `
 .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
 .check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); cursor: pointer; }
 .check-inline input { accent-color: var(--accent); width: 15px; height: 15px; }
+.hook-scope { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--text-2); }
+.hook-scope .scope-text { color: var(--text); }
+.hook-filter { grid-column: 1 / -1; padding-top: 4px; }
+.hook-filter .row { margin: 10px 0 0; }
+#hook-add .fold { margin-top: 12px; background: var(--surface); }
 .hook-add { padding: 14px; border: 1px dashed var(--border-strong); border-radius: 10px; margin-bottom: 8px; }
 .hook-add-title { font-weight: 600; margin-bottom: 10px; }
 @media (max-width: 700px) { .hook { grid-template-columns: 1fr; } .hook-actions { grid-row: auto; grid-column: auto; } }
@@ -271,6 +279,13 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
         <label class="check-inline"><input type="checkbox" id="h-alerts" checked> Alerts</label>
         <label class="check-inline"><input type="checkbox" id="h-digest" checked> Digest</label>
       </div>
+      <details class="fold" id="h-filter-fold">
+        <summary><span class="fold-title">Only some domains</span><span class="fold-note" id="h-filter-note">every domain</span></summary>
+        <div class="fold-body">
+          <div class="hint">Send this webhook only the alerts and digest for domains that match: for example, the domains tagged <code>emea</code> to the EMEA channel. Leave empty to send everything. Alerts about syncing are not about a domain, so they always go to every webhook.</div>
+          <div id="h-filter-builder"></div>
+        </div>
+      </details>
     </form>
     <div class="hint">URLs are stored encrypted and never shown again; only a masked form appears. Up to ${n.hookLimit} webhooks.</div>
     ${n.baseUrlKnown ? "" : '<div class="hint">Messages will link back to this dashboard once you have opened this page once more after adding a webhook.</div>'}
@@ -486,6 +501,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     });
   })();
   var N=${safeJson({ config: n.config, saved: n.saved, hooks: n.hooks, nextDigestAt: n.nextDigestAt, canSave: n.canSaveWebhook })};
+  var FOPS=${safeJson(FILTER_OPS)},FTAGS=${safeJson(vm.tags ?? [])};
   (function(){
     var $=function(id){return document.getElementById(id)};
     var DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -552,12 +568,28 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
         row.appendChild(act);
         var routes=el('div','hook-routes');routes.appendChild(check('h-a','Alerts',h.alerts,secret));routes.appendChild(check('h-d','Digest',h.digest,secret));
         row.appendChild(routes);
+        var sc=el('div','hook-scope');sc.appendChild(document.createTextNode('Domains: '));
+        sc.appendChild(el('span','scope-text',h.filterText?'only where '+h.filterText:'all'));
+        if(!secret){var fb=el('button','link-btn',h.filterText?'Change':'Choose domains');fb.type='button';fb.setAttribute('data-act','filter');sc.appendChild(fb)}
+        row.appendChild(sc);
+        if(editingFilter===h.id)row.appendChild(filterEditor(h));
         var st=el('div','hook-status');
         if(h.result){var ok=el('span',h.result.ok?'v-good':'v-bad',h.result.ok?'OK':'Failed');st.appendChild(document.createTextNode('Last delivery: '));st.appendChild(ok);st.appendChild(document.createTextNode(' '+rel(h.result.at)+' \u00b7 '+h.result.detail))}
         else st.textContent='Nothing sent to this webhook yet.';
         row.appendChild(st);
         box.appendChild(row);
       });
+    }
+    var editingFilter=null,editBuilder=null;
+    function filterEditor(h){
+      var wrap=el('div','hook-filter');var holder=el('div');wrap.appendChild(holder);
+      editBuilder=DCFilter.mount(holder,{ops:FOPS,fields:['tag','domain','policy'],tags:FTAGS.map(function(t){return {tag:t}}),initial:h.filter});
+      if(!h.filter)holder.querySelector('.fb-add').click();
+      var r=el('div','row');
+      var s=el('button','btn','Save');s.type='button';s.setAttribute('data-act','filter-save');r.appendChild(s);
+      var c=el('button','btn secondary','Cancel');c.type='button';c.setAttribute('data-act','filter-cancel');r.appendChild(c);
+      if(h.filter){var x=el('button','btn secondary danger','Send everything');x.type='button';x.setAttribute('data-act','filter-clear');r.appendChild(x)}
+      wrap.appendChild(r);return wrap;
     }
     renderHooks();
     function adopt(t){var r=JSON.parse(t);N.hooks=r.hooks;N.nextDigestAt=r.nextDigestAt;renderHooks();showNext(r.nextDigestAt)}
@@ -589,6 +621,16 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
       var b=e.target.closest('button[data-act]');if(!b)return;
       var row=b.closest('.hook'),id=row.getAttribute('data-id');
       var h=N.hooks.filter(function(x){return x.id===id})[0],label=(h&&h.name)||(h&&h.masked)||'this webhook';
+      var act=b.getAttribute('data-act');
+      if(act==='filter'){editingFilter=editingFilter===id?null:id;renderHooks();return}
+      if(act==='filter-cancel'){editingFilter=null;editBuilder=null;renderHooks();return}
+      if(act==='filter-clear'){update(id,{filter:null},label+' will now receive every domain.');editingFilter=null;return}
+      if(act==='filter-save'){
+        var err=editBuilder.validate();if(err){say(msg,false,err);return}
+        var w=editBuilder.get();
+        if(!w){say(msg,false,'Add a condition, or choose Send everything.');return}
+        update(id,{filter:w},label+' will only receive the domains that match.');editingFilter=null;return;
+      }
       if(b.getAttribute('data-act')==='secret'){
         var v=prompt('Signing secret for '+label+'. Requests are signed with HMAC-SHA256 using this secret. Leave empty to turn signing off.','');
         if(v===null)return;
@@ -604,9 +646,20 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     $('hook-add').addEventListener('submit',function(e){
       e.preventDefault();var url=$('h-url').value.trim();
       if(!url){say(msg,false,'Paste the webhook URL.');return}
-      run('Adding...',{action:'webhook_add',url:url,name:$('h-name').value,type:$('h-type').value,secret:$('h-secret').value,alerts:$('h-alerts').checked,digest:$('h-digest').checked},function(t){
-        adopt(t);$('h-url').value='';$('h-name').value='';$('h-secret').value='';say(msg,true,'Webhook added. Use Test to check that a message arrives.');
+      var filter=null;
+      if(addBuilder){var err=addBuilder.validate();if(err){say(msg,false,err);return}filter=addBuilder.get()}
+      run('Adding...',{action:'webhook_add',url:url,name:$('h-name').value,type:$('h-type').value,secret:$('h-secret').value,alerts:$('h-alerts').checked,digest:$('h-digest').checked,filter:filter},function(t){
+        adopt(t);$('h-url').value='';$('h-name').value='';$('h-secret').value='';
+        addBuilder=null;$('h-filter-builder').textContent='';$('h-filter-fold').open=false;$('h-filter-note').textContent='every domain';
+        say(msg,true,'Webhook added. Use Test to check that a message arrives.');
       });
+    });
+    var addBuilder=null;
+    $('h-filter-fold').addEventListener('toggle',function(){
+      if(!$('h-filter-fold').open||addBuilder)return;
+      addBuilder=DCFilter.mount($('h-filter-builder'),{ops:FOPS,fields:['tag','domain','policy'],tags:FTAGS.map(function(t){return {tag:t}}),initial:null,
+        onChange:function(){var n=addBuilder?addBuilder.count():0;$('h-filter-note').textContent=n?n+' condition'+(n===1?'':'s'):'every domain'}});
+      $('h-filter-builder').querySelector('.fb-add').click();
     });
     $('h-type').addEventListener('change',function(){
       var j=$('h-type').value==='json';
@@ -633,6 +686,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     title: "Admin",
     subtitle: "Setup, mailboxes, notifications and visibility. Requires the admin login.",
     active: "admin",
+    filterBuilder: true,
     url,
     body: adminBody,
     scripts,

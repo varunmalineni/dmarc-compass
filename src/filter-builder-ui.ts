@@ -5,7 +5,7 @@
 // It works on the plain form from domain-filter.ts (`{ all: [...] }`, `{ any: [...], not: true }`,
 // `{ field, op, value }`) and builds its DOM with createElement, never innerHTML.
 
-import { OPS } from "./domain-filter";
+import { OPS } from "./domain-filter.ts";
 
 export const FILTER_BUILDER_CSS = `
 .fb-panel { width: min(700px, 94vw); left: auto; right: 0; padding: 14px; }

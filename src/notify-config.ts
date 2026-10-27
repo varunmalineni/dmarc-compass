@@ -1,7 +1,7 @@
 // Notification settings: types, defaults and input sanitising. Pure (no
 // Worker APIs) so it can be unit-tested with plain Node.
 
-import type { DigestSchedule, DigestMode } from "./digest-schedule";
+import type { DigestSchedule, DigestMode } from "./digest-schedule.ts";
 
 export interface NotifyConfig {
   rules: {

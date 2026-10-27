@@ -60,6 +60,7 @@ async function main() {
       return until("Docker health to be healthy", () => docker("inspect", "-f", "{{.State.Health.Status}}", names.app) === "healthy", 90000, 2000).then(() => true, () => false);
     },
     async uid() { return docker("exec", names.app, "id", "-u"); },
+    async exec(...a) { return docker("exec", names.app, ...a); },
     async parserEnvNames() { return docker("exec", names.app, "node", "-e", PARSER_ENV_SCRIPT); },
     async backup() {
       docker("exec", names.app, "node", "dist/server.mjs", "--backup", "/data/e2e-backup.db");

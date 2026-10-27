@@ -8,16 +8,19 @@
 // "already alerted" until Slack has accepted the message, so a failure is
 // retried on the next run.
 
-import { getAppSetting, setAppSetting, getLastSync } from "./app-settings";
-import { encryptValue, decryptValue } from "./crypto-util";
-import { sanitizeConfig, maskWebhook, DEFAULT_CONFIG, type NotifyConfig } from "./notify-config";
-import { addHook, parseHooks, receiving, removeHook, toView, updateHook, type Hook, type HookView, MAX_HOOKS } from "./webhooks";
-import { alertsPayload, digestPayload, testPayload } from "./payloads";
-import { webhookHeaders } from "./sign";
-import { getSyncMinutes } from "./sync-settings";
-import { staleAfterSeconds } from "./sync-schedule";
-import { digestDue, digestPeriodDays, nextSlot } from "./digest-schedule";
-import { loadDomains } from "./domains-data";
+import { getAppSetting, setAppSetting, getLastSync } from "./app-settings.ts";
+import { encryptValue, decryptValue } from "./crypto-util.ts";
+import { sanitizeConfig, maskWebhook, DEFAULT_CONFIG, type NotifyConfig } from "./notify-config.ts";
+import { addHook, parseHooks, receiving, removeHook, serializeHooks, toView, updateHook, type Hook, type HookView, MAX_HOOKS } from "./webhooks.ts";
+import { alertsPayload, digestPayload, testPayload } from "./payloads.ts";
+import { webhookHeaders } from "./sign.ts";
+import { getSyncMinutes } from "./sync-settings.ts";
+import { staleAfterSeconds } from "./sync-schedule.ts";
+import { digestDue, digestPeriodDays, nextSlot } from "./digest-schedule.ts";
+import { loadDomains } from "./domains-data.ts";
+import { resolveScope } from "./tags.ts";
+import { describe } from "./domain-filter.ts";
+import { groupByFilter, planAlerts, scopeLine, settle, type RouteGroup } from "./routing.ts";
 import {
   context,
   header,
@@ -28,7 +31,7 @@ import {
   sections,
   type SlackBlock,
   type SlackMessage,
-} from "./slack-format";
+} from "./slack-format.ts";
 
 export interface NotifyEnv {
   DB: D1Database;
@@ -119,7 +122,7 @@ async function loadSavedHooks(env: NotifyEnv): Promise<Hook[]> {
 async function saveHooks(env: NotifyEnv, list: Hook[]): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
-    .bind(HOOKS_KEY, await encryptValue(JSON.stringify(list), env.CONFIG_ENCRYPTION_KEY as string), now)
+    .bind(HOOKS_KEY, await encryptValue(serializeHooks(list), env.CONFIG_ENCRYPTION_KEY as string), now)
     .run();
   // The list now holds everything the single-webhook keys did.
   await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(LEGACY_KEY).run();
@@ -132,7 +135,7 @@ export async function getDestinations(env: NotifyEnv): Promise<Destination[]> {
   const saved: Destination[] = (await loadSavedHooks(env)).map((h) => ({ ...h, source: "saved" }));
   const secret = env.SLACK_WEBHOOK_URL;
   if (secret && !saved.some((h) => h.url === secret)) {
-    saved.push({ id: "secret", type: "slack", name: "Worker secret", url: secret, secret: "", alerts: true, digest: true, source: "secret" });
+    saved.push({ id: "secret", type: "slack", name: "Worker secret", url: secret, secret: "", alerts: true, digest: true, filter: null, source: "secret" });
   }
   return saved;
 }
@@ -226,7 +229,7 @@ function needKey(env: NotifyEnv): Done | null {
 
 export async function addWebhook(
   env: NotifyEnv,
-  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
+  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown; filter?: unknown },
 ): Promise<Done> {
   const missing = needKey(env);
   if (missing) return missing;
@@ -249,7 +252,7 @@ export async function addWebhook(
 export async function updateWebhook(
   env: NotifyEnv,
   id: string,
-  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
+  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown; filter?: unknown },
 ): Promise<Done> {
   const missing = needKey(env);
   if (missing) return missing;
@@ -345,8 +348,10 @@ export async function newFailingSenders(
   win: { kind: "cursor"; cursor: number } | { kind: "period"; since: number },
   minMessages: number,
   now: number,
+  scope: string[] | null = null,
 ): Promise<Alert[]> {
   const recent = now - RECENT_DAYS * DAY;
+  const sc = inScopeSql("r.domain", scope);
   const where =
     win.kind === "cursor"
       ? "rep.inserted_at > ? AND r.date_begin >= ?"
@@ -365,13 +370,13 @@ export async function newFailingSenders(
          FROM dmarc_records r
          JOIN dmarc_reports rep ON rep.hash = r.report_hash
          LEFT JOIN ip_enrichment e ON e.ip = r.source_ip
-        WHERE ${where}
+        WHERE ${where}${sc.sql}
         GROUP BY r.domain, r.source_ip
        HAVING failing >= ? AND ${notSeenBefore}
         ORDER BY failing DESC
         LIMIT ${MAX_CANDIDATES}`,
     )
-    .bind(bound, win.kind === "cursor" ? recent : Math.max(bound, recent), minMessages, bound)
+    .bind(bound, win.kind === "cursor" ? recent : Math.max(bound, recent), ...sc.params, minMessages, bound)
     .all<{ domain: string; ip: string; esp: string; failing: number; total: number }>();
 
   return rows.results.map((r) => ({
@@ -476,8 +481,9 @@ export async function policyChanges(db: D1Database, cursor: number, since: numbe
 
 // ---------------------------------------------------------------- messages --
 
-function groupMessage(alerts: Alert[], baseUrl: string | null, preview = false): SlackMessage {
+function groupMessage(alerts: Alert[], baseUrl: string | null, preview = false, note: string | null = null): SlackMessage {
   const blocks: SlackBlock[] = [header(`dmarc-compass: ${alerts.length} alert${alerts.length === 1 ? "" : "s"}`)];
+  if (note) blocks.push(context(safe(note, 300)));
   for (const rule of Object.keys(RULE_TITLES) as RuleId[]) {
     const group = alerts.filter((a) => a.rule === rule).sort((a, b) => b.weight - a.weight);
     if (!group.length) continue;
@@ -490,8 +496,9 @@ function groupMessage(alerts: Alert[], baseUrl: string | null, preview = false):
   return { text: `dmarc-compass: ${alerts.length} alert${alerts.length === 1 ? "" : "s"}`, blocks };
 }
 
-function alertsContent(alerts: Alert[], baseUrl: string | null, now: number): Content {
-  return { slack: groupMessage(alerts, baseUrl), event: "alerts", json: alertsPayload(alerts, baseUrl, now) };
+function alertsContent(alerts: Alert[], baseUrl: string | null, now: number, group?: RouteGroup<Hook>): Content {
+  const text = group?.filter ? describe(group.filter) : null;
+  return { slack: groupMessage(alerts, baseUrl, false, scopeLine(text)), event: "alerts", json: alertsPayload(alerts, baseUrl, now, text ? { filter: text } : null) };
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -506,29 +513,35 @@ interface PeriodTotals {
   reports: number;
 }
 
-/** Totals for reports whose period starts in [start, end). */
-async function periodTotals(db: D1Database, start: number, end: number): Promise<PeriodTotals> {
+/** SQL limiting `column` to a list of domains (null: all). One bound parameter however long the list is. */
+const inScopeSql = (column: string, scope: string[] | null) =>
+  scope === null ? { sql: "", params: [] as string[] } : { sql: ` AND ${column} IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(scope)] };
+
+/** Totals for reports whose period starts in [start, end), for the domains in `scope` (null: all). */
+async function periodTotals(db: D1Database, start: number, end: number, scope: string[] | null = null): Promise<PeriodTotals> {
+  const rs = inScopeSql("r.domain", scope);
+  const reps = inScopeSql("domain", scope);
   const [t, f, rep] = await Promise.all([
     db
       .prepare(
         `SELECT COALESCE(SUM(r.count), 0) AS total,
                 COALESCE(SUM(CASE WHEN ${PASS} THEN r.count ELSE 0 END), 0) AS passed,
                 COUNT(DISTINCT r.source_ip) AS sources, COUNT(DISTINCT r.domain) AS domains
-           FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?`,
+           FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?${rs.sql}`,
       )
-      .bind(start, end)
+      .bind(start, end, ...rs.params)
       .first<{ total: number; passed: number; sources: number; domains: number }>(),
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM (
-           SELECT r.source_ip FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?
+           SELECT r.source_ip FROM dmarc_records r WHERE r.date_begin >= ? AND r.date_begin < ?${rs.sql}
             GROUP BY r.source_ip HAVING SUM(CASE WHEN ${PASS} THEN 0 ELSE r.count END) > 0)`,
       )
-      .bind(start, end)
+      .bind(start, end, ...rs.params)
       .first<{ n: number }>(),
     db
-      .prepare("SELECT COUNT(*) AS n FROM dmarc_reports WHERE date_begin >= ? AND date_begin < ?")
-      .bind(start, end)
+      .prepare(`SELECT COUNT(*) AS n FROM dmarc_reports WHERE date_begin >= ? AND date_begin < ?${reps.sql}`)
+      .bind(start, end, ...reps.params)
       .first<{ n: number }>(),
   ]);
   return {
@@ -561,19 +574,21 @@ interface DigestData {
   senders: Alert[];
 }
 
-export async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: number): Promise<DigestData> {
+/** `scope` limits the digest to those domains (null: all). */
+export async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: number, scope: string[] | null = null): Promise<DigestData> {
   const days = digestPeriodDays(cfg.digest);
   const end = now - (now % DAY);
   const start = end - days * DAY;
   const statusDays = Math.max(30, days + 1);
   const list = { q: "", sort: "risk", dir: "desc" as const, page: 1 };
   const [cur, prev, domains, senders, policies] = await Promise.all([
-    periodTotals(env.DB, start, end),
-    periodTotals(env.DB, start - days * DAY, start),
-    loadDomains(env.DB, { domains: [], range: statusDays, expr: null, scope: null }, list),
-    newFailingSenders(env.DB, { kind: "period", since: start }, cfg.rules.newFailingSender.minMessages, now),
+    periodTotals(env.DB, start, end, scope),
+    periodTotals(env.DB, start - days * DAY, start, scope),
+    loadDomains(env.DB, { domains: scope ?? [], range: statusDays, expr: null, scope: null }, list),
+    newFailingSenders(env.DB, { kind: "period", since: start }, cfg.rules.newFailingSender.minMessages, now, scope),
     policyChanges(env.DB, 0, start),
   ]);
+  const only = scope === null ? null : new Set(scope);
   return {
     label: days === 1 ? shortDate(start) : `${shortDate(start)} to ${shortDate(end - 1)}`,
     days,
@@ -584,12 +599,12 @@ export async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: numb
     summary: domains.summary,
     statusDays,
     attention: domains.rows.filter((r) => r.status === "attention").slice(0, 5),
-    policies,
+    policies: only ? policies.filter((a) => only.has(String(a.data.domain))) : policies,
     senders,
   };
 }
 
-function digestSlack(d: DigestData, baseUrl: string | null): SlackMessage {
+function digestSlack(d: DigestData, baseUrl: string | null, note: string | null = null): SlackMessage {
   const { cur, prev } = d;
   const rate = cur.total ? (cur.passed / cur.total) * 100 : 0;
   const prevRate = prev.total ? (prev.passed / prev.total) * 100 : null;
@@ -598,6 +613,7 @@ function digestSlack(d: DigestData, baseUrl: string | null): SlackMessage {
   const s = d.summary;
 
   const blocks: SlackBlock[] = [header(`dmarc-compass digest: ${d.label}`)];
+  if (note) blocks.push(context(safe(note, 300)));
   blocks.push(
     ...sections([
       cur.total ? `*${num(cur.total)}* messages${volume}` : "No messages in reports for this period yet. Receivers can take a day or two to report.",
@@ -644,10 +660,11 @@ function digestSlack(d: DigestData, baseUrl: string | null): SlackMessage {
 /** The digest covers the last N complete UTC days. Receivers date each report
  * at 00:00 UTC of the day it covers and send it hours later, so a rolling
  * "last 24 hours" window would miss almost everything. */
-async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | null, now: number): Promise<Content> {
-  const d = await collectDigest(env, cfg, now);
+async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | null, now: number, group?: RouteGroup<Hook>, scope: string[] | null = null): Promise<Content> {
+  const d = await collectDigest(env, cfg, now, scope);
+  const text = group?.filter ? describe(group.filter) : null;
   return {
-    slack: digestSlack(d, baseUrl),
+    slack: digestSlack(d, baseUrl, scopeLine(text, scope?.length)),
     event: "digest",
     json: digestPayload(
       {
@@ -660,6 +677,7 @@ async function buildDigest(env: NotifyEnv, cfg: NotifyConfig, baseUrl: string | 
         mostFailing: d.attention,
         policyChanges: d.policies,
         newFailingSenders: d.senders,
+        scope: text ? { filter: text, domains: scope?.length ?? 0 } : null,
       },
       baseUrl,
       now,
@@ -780,16 +798,31 @@ export async function runNotifications(env: NotifyEnv): Promise<NotifyOutcome> {
       const fresh = await dropCooledDown(env.DB, candidates, now);
 
       if (fresh.length) {
-        const label = `${fresh.length} alert${fresh.length === 1 ? "" : "s"} sent`;
-        const res = await deliver(env, alertTargets, "alert", alertsContent(fresh, baseUrl, now), label);
-        // Sent once at least one webhook has it; a webhook that failed is shown in the panel.
-        if (res.sent > 0) {
-          await markSent(env.DB, fresh, now);
-          if (fresh.some((a) => a.rule === "syncHealth")) await setAppSetting(env.DB, "notify_sync_alerting", "1");
-          await setAppSetting(env.DB, "notify_cursor", String(now));
-          outcome.alertsSent = fresh.length;
+        // Each group of webhooks with the same filter gets the alerts for its domains.
+        const groups = await Promise.all(
+          groupByFilter(alertTargets).map(async (group) => {
+            const list = await resolveScope(env.DB, group.filter);
+            return { group, scope: list === null ? null : new Set(list) };
+          }),
+        );
+        const plan = planAlerts(fresh, groups);
+        const delivered = new Set<string>();
+        const errors: string[] = [];
+        for (const send of plan.sends) {
+          const label = `${send.alerts.length} alert${send.alerts.length === 1 ? "" : "s"} sent`;
+          const res = await deliver(env, send.group.hooks, "alert", alertsContent(send.alerts, baseUrl, now, send.group), label);
+          // Delivered once at least one webhook of the group has it; one that failed is shown in the panel.
+          if (res.sent > 0) for (const a of send.alerts) delivered.add(a.key);
+          errors.push(...res.errors);
         }
-        if (res.errors.length) outcome.error = res.errors.join("; ");
+        const { done, retry } = settle(fresh, plan, delivered);
+        // Alerts nobody wanted are marked too, so they are not offered again.
+        if (done.length) await markSent(env.DB, done, now);
+        if (done.some((a) => a.rule === "syncHealth" && delivered.has(a.key))) await setAppSetting(env.DB, "notify_sync_alerting", "1");
+        // The cursor only moves on once everything wanted has gone out; otherwise the rest is looked at again.
+        if (retry.length === 0) await setAppSetting(env.DB, "notify_cursor", String(now));
+        outcome.alertsSent = delivered.size;
+        if (errors.length) outcome.error = errors.join("; ");
       } else {
         if (recovered) {
           const res = await deliver(
@@ -818,10 +851,11 @@ export async function runNotifications(env: NotifyEnv): Promise<NotifyOutcome> {
       const enabledAt = (await getNumber(env.DB, "notify_digest_enabled_at")) ?? now;
       const due = digestDue(cfg.digest, lastSlot, enabledAt, now);
       if (due.due && due.slot !== null) {
-        const res = await deliver(env, digestTargets, "digest", await buildDigest(env, cfg, baseUrl, now), "digest sent");
-        if (res.sent > 0) {
+        const res = await sendDigests(env, cfg, digestTargets, baseUrl, now, "digest sent");
+        // The slot counts as done when something went out, or when there was nothing to send to anyone.
+        if (res.sent > 0 || res.attempted === 0) {
           await setAppSetting(env.DB, "notify_digest_last_slot", String(due.slot));
-          outcome.digestSent = true;
+          outcome.digestSent = res.sent > 0;
         }
         if (res.errors.length) outcome.error ??= res.errors.join("; ");
       }
@@ -855,13 +889,41 @@ export async function testWebhook(env: NotifyEnv, id: string): Promise<Done> {
   return res.sent ? { ok: true } : { ok: false, error: res.errors[0] ?? "Delivery failed." };
 }
 
+/** Sends the digest, built separately for each group of webhooks that share a filter.
+ * A group whose filter matches no domain is skipped and the webhook says so. */
+async function sendDigests(
+  env: NotifyEnv,
+  cfg: NotifyConfig,
+  targets: Hook[],
+  baseUrl: string | null,
+  now: number,
+  okDetail: string,
+): Promise<{ sent: number; attempted: number; errors: string[] }> {
+  let sent = 0;
+  let attempted = 0;
+  const errors: string[] = [];
+  for (const group of groupByFilter(targets)) {
+    const scope = await resolveScope(env.DB, group.filter);
+    if (scope !== null && scope.length === 0) {
+      const at = Math.floor(Date.now() / 1000);
+      await recordResults(env.DB, group.hooks.map((h): [string, HookResult] => [h.id, { at, ok: true, kind: "digest", detail: "nothing sent: no domain matches this webhook's filter" }]));
+      continue;
+    }
+    attempted++;
+    const res = await deliver(env, group.hooks, "digest", await buildDigest(env, cfg, baseUrl, now, group, scope), okDetail);
+    sent += res.sent;
+    errors.push(...res.errors);
+  }
+  return { sent, attempted, errors };
+}
+
 export async function sendDigestNow(env: NotifyEnv): Promise<Done> {
   const targets = receiving("digest", await getDestinations(env));
   if (targets.length === 0) return { ok: false, error: "No webhook is set to receive the digest." };
   const { config } = await getConfig(env.DB);
   const now = Math.floor(Date.now() / 1000);
-  const message = await buildDigest(env, config, await getAppSetting(env.DB, "base_url"), now);
-  const res = await deliver(env, targets, "digest", message, "digest sent (manual)");
+  const res = await sendDigests(env, config, targets, await getAppSetting(env.DB, "base_url"), now, "digest sent (manual)");
+  if (res.attempted === 0) return { ok: false, error: "No domain matches the filter of any webhook that receives the digest, so there is nothing to send." };
   if (res.errors.length === 0) return { ok: true };
   return { ok: false, error: res.sent ? `Sent to ${res.sent}, but failed for: ${res.errors.join("; ")}` : res.errors.join("; ") };
 }

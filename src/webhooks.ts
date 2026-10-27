@@ -2,6 +2,7 @@
 // plain Node. Storage and delivery live in notify.ts.
 
 import { maskWebhook, sanitizeNickname, validateWebhookUrl } from "./notify-config.ts";
+import { describe, parseExpr, toWire, type Group } from "./domain-filter.ts";
 
 export type HookType = "slack" | "json";
 
@@ -18,6 +19,8 @@ export interface Hook {
   alerts: boolean;
   /** Receives the digest. */
   digest: boolean;
+  /** Only domains matching this get to this webhook (alerts and digest). null means every domain. */
+  filter: Group | null;
 }
 
 export const MAX_HOOKS = 10;
@@ -38,6 +41,13 @@ function secretOf(v: unknown): string {
   return typeof v === "string" ? v.trim().slice(0, MAX_SECRET) : "";
 }
 
+/** Reads a filter from a request or from storage. Empty or missing means no filter. */
+function filterOf(v: unknown): Result<{ filter: Group | null }> {
+  if (v === undefined || v === null || v === "") return { ok: true, filter: null };
+  const p = parseExpr(v);
+  return p.ok ? { ok: true, filter: p.expr } : { ok: false, error: p.error };
+}
+
 function normalised(url: string): string {
   try {
     return new URL(url).toString();
@@ -48,7 +58,7 @@ function normalised(url: string): string {
 
 export function addHook(
   list: Hook[],
-  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
+  input: { url: unknown; name?: unknown; type?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown; filter?: unknown },
   id: string,
 ): Result<{ list: Hook[]; hook: Hook }> {
   if (list.length >= MAX_HOOKS) return { ok: false, error: `You can have at most ${MAX_HOOKS} webhooks.` };
@@ -56,6 +66,8 @@ export function addHook(
   const v = validateWebhookUrl(input.url);
   if (!v.ok) return v;
   if (list.some((h) => normalised(h.url) === v.url)) return { ok: false, error: "That webhook is already in the list." };
+  const f = filterOf(input.filter);
+  if (!f.ok) return f;
   const type = kind(input.type);
   const hook: Hook = {
     id,
@@ -65,6 +77,7 @@ export function addHook(
     secret: type === "json" ? secretOf(input.secret) : "",
     alerts: flag(input.alerts, true),
     digest: flag(input.digest, true),
+    filter: f.filter,
   };
   return { ok: true, list: [...list, hook], hook };
 }
@@ -72,9 +85,12 @@ export function addHook(
 export function updateHook(
   list: Hook[],
   id: string,
-  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown },
+  patch: { name?: unknown; secret?: unknown; alerts?: unknown; digest?: unknown; filter?: unknown },
 ): Result<{ list: Hook[] }> {
   if (!list.some((h) => h.id === id)) return { ok: false, error: "That webhook no longer exists." };
+  // undefined keeps the current filter; null or an empty one removes it.
+  const f = patch.filter === undefined ? null : filterOf(patch.filter);
+  if (f && !f.ok) return f;
   return {
     ok: true,
     list: list.map((h) =>
@@ -87,6 +103,7 @@ export function updateHook(
             secret: h.type !== "json" || patch.secret === undefined ? h.secret : secretOf(patch.secret),
             alerts: flag(patch.alerts, h.alerts),
             digest: flag(patch.digest, h.digest),
+            filter: f && f.ok ? f.filter : h.filter,
           },
     ),
   };
@@ -123,10 +140,27 @@ export function parseHooks(json: string): Hook[] {
       secret: type === "json" ? secretOf(h.secret) : "",
       alerts: flag(h.alerts, true),
       digest: flag(h.digest, true),
+      // A filter that no longer reads matches nothing, rather than widening what the hook sends.
+      filter: stored(h.filter),
     });
     if (out.length >= MAX_HOOKS) break;
   }
   return out;
+}
+
+/** A stored filter. One that is damaged reads as "matches nothing" so a hook never starts sending more than intended. */
+function stored(v: unknown): Group | null {
+  const f = filterOf(v);
+  if (f.ok) return f.filter;
+  return NOTHING;
+}
+
+/** A filter no domain satisfies (no real domain is named "-"). */
+const NOTHING: Group = { mode: "all", items: [{ field: "domain", op: "eq", value: "-" }] };
+
+/** The list as stored. Filters are written in their plain form, which parseHooks reads back. */
+export function serializeHooks(list: Hook[]): string {
+  return JSON.stringify(list.map((h) => ({ ...h, filter: h.filter ? toWire(h.filter) : null })));
 }
 
 export function receiving(kind: "alerts" | "digest", hooks: Hook[]): Hook[] {
@@ -143,10 +177,13 @@ export interface HookView {
   masked: string;
   alerts: boolean;
   digest: boolean;
+  /** The filter in the form the builder reads and writes, and the same in words. null: every domain. */
+  filter: unknown;
+  filterText: string | null;
   /** "secret" hooks come from a Worker secret and cannot be edited or removed here. */
   source: "saved" | "secret";
 }
 
 export function toView(h: Hook, source: "saved" | "secret"): HookView {
-  return { id: h.id, type: h.type, name: h.name, signed: Boolean(h.secret), masked: maskWebhook(h.url), alerts: h.alerts, digest: h.digest, source };
+  return { id: h.id, type: h.type, name: h.name, signed: Boolean(h.secret), masked: maskWebhook(h.url), alerts: h.alerts, digest: h.digest, filter: h.filter ? toWire(h.filter) : null, filterText: h.filter ? describe(h.filter) : null, source };
 }

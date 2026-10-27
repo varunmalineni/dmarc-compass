@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addHook, updateHook, removeHook, parseHooks, receiving, toView, MAX_HOOKS, type Hook } from "../src/webhooks.ts";
+import { addHook, updateHook, removeHook, parseHooks, serializeHooks, receiving, toView, MAX_HOOKS, type Hook } from "../src/webhooks.ts";
+import { evaluate } from "../src/domain-filter.ts";
+const NO_TAGS: ReadonlySet<string> = new Set();
 
 const URL1 = "https://hooks.slack.com/services/T1/B1/aaaa1111";
 const URL2 = "https://hooks.slack.com/services/T2/B2/bbbb2222";
@@ -12,7 +14,7 @@ function must<T extends { ok: boolean }>(r: T): Extract<T, { ok: true }> {
 
 test("add: validates, defaults to receiving everything, and sanitises the nickname", () => {
   const r = must(addHook([], { url: URL1, name: "  #alerts \n" }, "a1"));
-  assert.deepEqual(r.hook, { id: "a1", type: "slack", name: "#alerts", url: URL1, secret: "", alerts: true, digest: true });
+  assert.deepEqual(r.hook, { id: "a1", type: "slack", name: "#alerts", url: URL1, secret: "", alerts: true, digest: true, filter: null });
   assert.equal(r.list.length, 1);
 });
 
@@ -122,4 +124,48 @@ test("parse: lists saved before types existed load as slack webhooks", () => {
 test("parse: a stored json hook keeps its secret", () => {
   const [h] = parseHooks(JSON.stringify([{ id: "j", type: "json", url: URL1, secret: "abc" }]));
   assert.equal(h.secret, "abc");
+});
+
+// ----------------------------------------------------------------- filters
+
+const EMEA = { field: "tag", op: "has", value: "emea" };
+
+test("a filter is optional, and is checked when given", () => {
+  assert.equal(must(addHook([], { url: URL1, filter: null }, "a")).hook.filter, null);
+  assert.equal(must(addHook([], { url: URL1, filter: "" }, "a")).hook.filter, null);
+  const h = must(addHook([], { url: URL1, filter: { all: [EMEA] } }, "a")).hook;
+  assert.equal(h.filter?.items.length, 1);
+  const bad = addHook([], { url: URL1, filter: { all: [{ field: "tag", op: "nope", value: "x" }] } }, "a");
+  assert.equal(bad.ok, false);
+  assert.equal(addHook([], { url: URL1, filter: "emea" }, "a").ok, false);
+});
+
+test("update: no filter in the patch keeps it, null removes it, a new one replaces it, a bad one is refused", () => {
+  const list = must(addHook([], { url: URL1, filter: { all: [EMEA] } }, "a")).list;
+  assert.ok(must(updateHook(list, "a", { name: "x" })).list[0].filter);
+  assert.equal(must(updateHook(list, "a", { filter: null })).list[0].filter, null);
+  const next = must(updateHook(list, "a", { filter: { any: [{ field: "domain", op: "ends", value: ".de" }] } })).list[0].filter;
+  assert.equal(next?.mode, "any");
+  const bad = updateHook(list, "a", { filter: { all: [{ field: "x" }] } });
+  assert.equal(bad.ok, false);
+});
+
+test("a stored filter survives save and load", () => {
+  const list = must(addHook([], { url: URL1, filter: { all: [EMEA, { not: true, any: [{ field: "policy", op: "is", value: "reject" }] }] } }, "a")).list;
+  const back = parseHooks(serializeHooks(list));
+  assert.deepEqual(back, list);
+  assert.equal(toView(back[0], "saved").filterText, "has tag emea and not (policy is reject)");
+  assert.deepEqual(toView(back[0], "saved").filter, { all: [EMEA, { any: [{ field: "policy", op: "is", value: "reject" }], not: true }] });
+  assert.equal(toView({ ...back[0], filter: null }, "saved").filterText, null);
+});
+
+test("hooks saved before filters existed load as 'every domain'", () => {
+  assert.equal(parseHooks(JSON.stringify([{ id: "h", url: URL1 }]))[0].filter, null);
+});
+
+test("a stored filter that cannot be read matches nothing, instead of widening to every domain", () => {
+  const [h] = parseHooks(JSON.stringify([{ id: "h", url: URL1, filter: { all: [{ field: "tag", op: "gone" }] } }]));
+  assert.ok(h.filter);
+  assert.equal(evaluate(h.filter, { domain: "shop.de", tags: NO_TAGS, policy: null }), false);
+  assert.equal(evaluate(h.filter, { domain: "-", tags: NO_TAGS, policy: null }), true, "only a domain named '-' could match");
 });

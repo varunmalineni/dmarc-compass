@@ -44,13 +44,21 @@ function links(baseUrl: string | null): Record<string, string> | null {
   return { dashboard: b + "/", domains: b + "/domains", report: b + "/report" };
 }
 
-export function alertsPayload(alerts: AlertLike[], baseUrl: string | null, now: number) {
+export interface ScopeInfo {
+  /** The webhook's filter in words. */
+  filter: string;
+  /** How many domains it matched when this was sent (digests). */
+  domains?: number;
+}
+
+export function alertsPayload(alerts: AlertLike[], baseUrl: string | null, now: number, scope: ScopeInfo | null = null) {
   const ordered = [...alerts].sort((a, b) => b.weight - a.weight);
   return {
     schema: `${SOURCE}.alerts.v1`,
     source: SOURCE,
     event: "alerts",
     sent_at: iso(now),
+    scope,
     count: alerts.length,
     alerts: ordered.map((a) => ({ rule: RULE_IDS[a.rule], message: plain(a.line), ...a.data })),
     links: links(baseUrl),
@@ -78,6 +86,7 @@ export interface DigestInput {
   mostFailing: Array<{ domain: string; policy: string | null; total: number; failing: number; rate: number }>;
   policyChanges: AlertLike[];
   newFailingSenders: AlertLike[];
+  scope?: ScopeInfo | null;
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -90,6 +99,7 @@ export function digestPayload(d: DigestInput, baseUrl: string | null, now: numbe
     source: SOURCE,
     event: "digest",
     sent_at: iso(now),
+    scope: d.scope ?? null,
     period: { start: iso(d.periodStart), end: iso(d.periodEnd), days: d.days },
     totals: {
       messages: d.current.total,
