@@ -41,5 +41,4 @@ Tags are not moved after publishing, so fix forward: release the next patch vers
 ## Before the first public release
 
 - Make the repository public, then the package (above).
-- Replace `<owner>` in the documentation with the final GitHub user or organisation name.
-- Optionally add the CI status badge to the README; it needs the repository path, which is why it is not there yet.
+- The documentation names this repository's owner in the clone and image commands. If you fork or rename the project, search for that name and replace it. The workflow itself computes the image name from the repository and needs no change.

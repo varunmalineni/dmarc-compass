@@ -31,7 +31,7 @@ If one is missing, Compose (or the container, with `docker run`) stops and tells
 
 ## The published image
 
-Each release is published to GitHub's container registry as `ghcr.io/<owner>/dmarc-compass`, built for **x86-64 and ARM64**, with build provenance and a software bill of materials attached.
+Each release is published to GitHub's container registry as `ghcr.io/varunmalineni/dmarc-compass`, built for **x86-64 and ARM64**, with build provenance and a software bill of materials attached.
 
 | Tag | What it is | Use it for |
 |---|---|---|
@@ -44,7 +44,7 @@ For Compose, set the image in `.env`, then pull and start:
 
 ```sh
 # .env
-DMARC_COMPASS_IMAGE=ghcr.io/<owner>/dmarc-compass:0.1.0
+DMARC_COMPASS_IMAGE=ghcr.io/varunmalineni/dmarc-compass:0.1.0
 ```
 
 ```sh
@@ -53,7 +53,7 @@ docker compose pull && docker compose up -d
 
 To **upgrade**, change the tag, and run the same two commands. The data volume is kept, and tables are upgraded automatically when the new version starts.
 
-To pin an image exactly, use its digest: `ghcr.io/<owner>/dmarc-compass@sha256:...`. Each release's page lists it. You can see what a tag points at, and the attached build provenance, with `docker buildx imagetools inspect ghcr.io/<owner>/dmarc-compass:0.1.0`.
+To pin an image exactly, use its digest: `ghcr.io/varunmalineni/dmarc-compass@sha256:...`. Each release's page lists it. You can see what a tag points at, and the attached build provenance, with `docker buildx imagetools inspect ghcr.io/varunmalineni/dmarc-compass:0.1.0`.
 
 Before a release gets its tags, the exact image is tested: the Docker and Kubernetes end-to-end tests run on it, and the ARM64 half is started. If either fails, no tag moves.
 
@@ -62,7 +62,7 @@ Before a release gets its tags, the exact image is tested: the Docker and Kubern
 ```sh
 docker run -d --name dmarc-compass -p 127.0.0.1:8080:8080 -v dmarc-data:/data \
   -e ADMIN_USER=admin -e ADMIN_PASSWORD='choose-a-long-password' \
-  -e CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)" ghcr.io/<owner>/dmarc-compass:0.1.0
+  -e CONFIG_ENCRYPTION_KEY="$(openssl rand -base64 32)" ghcr.io/varunmalineni/dmarc-compass:0.1.0
 ```
 
 To build it yourself instead: `docker build -f deploy/docker/Dockerfile -t dmarc-compass .` and use `dmarc-compass` as the image name.

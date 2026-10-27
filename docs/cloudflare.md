@@ -5,7 +5,7 @@
 **You need:** a Cloudflare account on the **Workers Paid** plan, **Docker** running locally, **Node.js 20+**, and a mailbox with **IMAP** that receives your `rua=` reports.
 
 ```bash
-git clone https://github.com/<you>/dmarc-compass.git
+git clone https://github.com/varunmalineni/dmarc-compass.git
 cd dmarc-compass
 npm install
 npm run setup

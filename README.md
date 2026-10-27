@@ -10,6 +10,7 @@ Point your domains' `rua=` addresses at a mailbox and see who is sending as you,
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-6366f1)
 ![Runs on](https://img.shields.io/badge/runs_on-Cloudflare_·_Docker_·_Kubernetes-a855f7)
+[![CI](https://github.com/varunmalineni/dmarc-compass/actions/workflows/ci.yml/badge.svg)](https://github.com/varunmalineni/dmarc-compass/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-early-eab308)
 
 [Quick start](#quick-start) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Screenshots](#screenshots) &nbsp;·&nbsp; [Documentation](#documentation) &nbsp;·&nbsp; [Compared with](#compared-with-other-options) &nbsp;·&nbsp; [Security](docs/security.md)
@@ -73,7 +74,7 @@ It is the same app everywhere: the dashboards, alerts, digest, exports, sign-in 
 ### Cloudflare
 
 ```bash
-git clone https://github.com/<you>/dmarc-compass.git
+git clone https://github.com/varunmalineni/dmarc-compass.git
 cd dmarc-compass
 npm install
 npm run setup
@@ -84,7 +85,7 @@ npm run setup
 ### Docker
 
 ```bash
-git clone https://github.com/<you>/dmarc-compass.git
+git clone https://github.com/varunmalineni/dmarc-compass.git
 cd dmarc-compass
 cp .env.example .env        # then edit it: ADMIN_PASSWORD and CONFIG_ENCRYPTION_KEY
 docker compose up -d --build
@@ -96,7 +97,7 @@ Open <http://localhost:8080>, sign in, add your mailbox under **Admin → Mailbo
 
 ```bash
 # set newName and newTag under "images:" in deploy/kubernetes/kustomization.yaml
-# (the published image, ghcr.io/<owner>/dmarc-compass, or one you built), then:
+# (the published image, ghcr.io/varunmalineni/dmarc-compass, or one you built), then:
 kubectl apply -f deploy/kubernetes/namespace.yaml
 kubectl -n dmarc-compass create secret generic dmarc-compass-secrets \
   --from-literal=ADMIN_USER=admin --from-literal=ADMIN_PASSWORD='choose-a-long-password' \
