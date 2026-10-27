@@ -10,7 +10,7 @@
 # one in the root Dockerfile (a test checks that they match).
 FROM ghcr.io/cry-inc/dmarc-report-viewer:2.6.2 AS parser
 
-FROM node:24-slim AS build
+FROM node:26-slim AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 # Only the bundler is needed to build the server; skip the Cloudflare tooling.
@@ -20,7 +20,7 @@ COPY scripts/build-node.mjs scripts/build-node.mjs
 COPY src src
 RUN node scripts/build-node.mjs
 
-FROM node:24-slim
+FROM node:26-slim
 ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=8080 \
