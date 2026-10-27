@@ -17,7 +17,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { KEY, PASSWORD, BACKUP_COUNT_SCRIPT, PARSER_ENV_SCRIPT, check, createClient, finish, runScenario, sleep, until } from "./lib.mjs";
+import { KEY, PASSWORD, BACKUP_COUNT_SCRIPT, PARSER_ENV_SCRIPT, appendMessages, check, createClient, finish, runScenario, sleep, until } from "./lib.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const args = process.argv.slice(2);
@@ -101,6 +101,9 @@ async function main() {
     await until("the app to answer /healthz", async () => (await fetch(`${c.base}/healthz`)).ok, 40000);
   };
   await connectForwards();
+  // The test mail server is a JVM in a second container, and the pod is "ready" before it is. On a slow machine
+  // (a CI runner) it can still be starting, so wait until it answers instead of racing it.
+  await until("the test mail server", async () => { await appendMessages(imapPort, []); return true; }, 120000, 1000);
 
   const exec = (...a) => inNs(NS, "exec", podOf(NS), "-c", "dmarc-compass", "--", ...a);
   await runScenario({
