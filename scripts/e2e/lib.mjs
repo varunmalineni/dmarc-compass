@@ -123,8 +123,8 @@ export function createClient() {
       const res = await c.http("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: user, password, next: "/admin" }) });
       return res.status === 303 && res.headers.get("location") === "/admin";
     },
-    async csvRows(dataset) {
-      return (await (await c.http(`/export/${dataset}?range=all`)).text()).trim().split("\n").length - 1;
+    async csvRows(dataset, query = "") {
+      return (await (await c.http(`/export/${dataset}?range=all${query ? `&${query}` : ""}`)).text()).trim().split("\n").length - 1;
     },
     /** A plain request, like a browser opening a page (fetch always labels itself as a script). */
     navigate(path) {
@@ -200,6 +200,45 @@ export async function runScenario(h, c) {
   check("the original XML comes from that mailbox's own parser", xml?.status === 200 && xmlText.includes("<feedback"), `${xml?.status} ${xmlText.slice(0, 120)}`);
   for (const p of ["/", "/reports?range=all", "/map", "/tls-reports"]) check(`page ${p} loads`, (await c.http(p)).status === 200);
 
+  // ---- domain tags
+  const fq = (expr) => `f=${encodeURIComponent(JSON.stringify(expr))}`;
+  const tagged = await c.admin({ action: "tags_apply", domains: ["alpha.example"], add: ["emea"] });
+  check("a tag can be added to a domain", tagged.status === 200 && tagged.json?.domains === 1, JSON.stringify(tagged));
+  check("the tag filters the exports (2 reports and 3 records for alpha.example)", (await c.csvRows("reports", "tag=emea")) === 2 && (await c.csvRows("records", "tag=emea")) === 3);
+  check("a tag nobody has shows nothing, not everything", (await c.csvRows("reports", "tag=nobody")) === 0);
+  const rule = await c.admin({ action: "tag_rule_save", tag: "bx", expr: { field: "domain", op: "ends", value: "beta.example" } });
+  check("an automatic rule tags domains by name", rule.status === 200 && (await c.csvRows("reports", "tag=bx")) === 1, JSON.stringify(rule));
+  check("OR combines tags", (await c.csvRows("reports", fq({ any: [{ field: "tag", op: "has", value: "emea" }, { field: "tag", op: "has", value: "bx" }] }))) === 3);
+  check("AND narrows them", (await c.csvRows("reports", fq({ all: [{ field: "tag", op: "has", value: "emea" }, { field: "tag", op: "has", value: "bx" }] }))) === 0);
+  check("NOT inverts a group", (await c.csvRows("reports", fq({ any: [{ field: "tag", op: "has", value: "emea" }], not: true }))) === 1);
+  check("a filter can use the policy and the domain name", (await c.csvRows("reports", fq({ all: [{ field: "policy", op: "is", value: "none" }, { field: "domain", op: "starts", value: "alpha" }] }))) === 2);
+  const domainsPage = await (await c.http("/domains?range=all")).text();
+  check("the Domains page shows the tags", /class="tag"[^>]*>emea</.test(domainsPage) && /class="tag"[^>]*>bx</.test(domainsPage));
+  check("a page with a filter loads and says what it shows", (await (await c.http("/?tag=emea")).text()).includes("has tag emea"));
+  const tagExport = await (await c.http("/export/tags?format=csv")).text();
+  check("the tags export lists each domain with its own tags and its rule tags", /alpha\.example,emea,/.test(tagExport) && /beta\.example,,bx/.test(tagExport), tagExport);
+  const overviewBefore = await c.admin({ action: "tags_overview" });
+  const emeaColor = overviewBefore.json?.tags?.find((t) => t.tag === "emea")?.color;
+  const bxColor = overviewBefore.json?.tags?.find((t) => t.tag === "bx")?.color;
+  check("each new tag gets a colour at once, and the two differ", Boolean(emeaColor && bxColor) && emeaColor !== bxColor, JSON.stringify([emeaColor, bxColor]));
+  const picked = emeaColor === "teal" ? "pink" : "teal";
+  const colored = await c.admin({ action: "tag_color", tag: "emea", color: picked });
+  check("a tag's colour can be chosen", colored.status === 200 && colored.json?.color === picked, JSON.stringify(colored));
+  const refused = await c.admin({ action: "tag_color", tag: "emea", color: "javascript:alert(1)" });
+  check("a colour that is not on offer is refused", refused.status === 400);
+  const coloredPage = await (await c.http("/domains?range=all")).text();
+  check("the Domains page shows the chosen colour", new RegExp(`class="tag" data-c="${picked}"[^>]*>emea<`).test(coloredPage));
+  const signedOutTags = await createClient().withBase(c.base).navigate("/tags");
+  check("the Tags page asks for the login", signedOutTags.status === 303 && signedOutTags.location.startsWith("/login"), JSON.stringify(signedOutTags));
+  const tagsPage = await c.http("/tags");
+  const tagsHtml = await tagsPage.text();
+  check("signed in, the Tags page loads with its panels", tagsPage.status === 200 && tagsHtml.includes("Automatic rules") && tagsHtml.includes("Import and export"));
+  check("the Tags link is in the sidebar, and the Admin page no longer has a tags tab", (await (await c.http("/domains")).text()).includes('href="/tags"') && !(await (await c.http("/admin")).text()).includes('data-tab="tags"'));
+  const domainsRes = await c.http("/domains");
+  check("dashboard pages cannot be kept by a shared cache (they differ when signed in)", /private/.test(domainsRes.headers.get("cache-control") ?? "") && /cookie/i.test(domainsRes.headers.get("vary") ?? ""), JSON.stringify([...domainsRes.headers]));
+  const preview = await c.admin({ action: "tags_import", text: "alpha.example, team-a\nbroken", dryRun: true });
+  check("an import is checked before anything is changed", preview.json?.domains === 1 && preview.json?.errorCount === 1 && (await c.csvRows("reports", "tag=team-a")) === 0);
+
   const leak = await h.parserEnvNames();
   const parserEnv = JSON.parse(leak.split("\n")[0] || "[]");
   check("the parser process has no admin password or encryption key", parserEnv.length > 0 && !parserEnv.includes("ADMIN_PASSWORD") && !parserEnv.includes("CONFIG_ENCRYPTION_KEY"), leak);
@@ -240,6 +279,7 @@ export async function runScenario(h, c) {
   const after = await c.admin({ action: "sync" });
   check("sync works again after the restart (parsers start again)", after.status === 200 && after.json?.mailboxes?.[0]?.ok === true, JSON.stringify(after).slice(0, 300));
   check("and finds nothing duplicated", (await c.csvRows("reports")) === 4);
+  check("tags and rules survive the restart (beta.example now has its second report)", (await c.csvRows("reports", "tag=emea")) === 2 && (await c.csvRows("reports", "tag=bx")) === 2);
 
   check("the changed login survives the restart", (await createClient().withBase(c.base).signIn("owner", NEW_PASSWORD)) && !(await createClient().withBase(c.base).signIn("admin", PASSWORD)));
 

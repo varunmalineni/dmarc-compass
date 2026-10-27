@@ -185,6 +185,19 @@ const MIGRATIONS: Migration[] = [
       `ALTER TABLE ip_enrichment ADD COLUMN loc_tried_at INTEGER`,
     ],
   },
+  {
+    id: 8,
+    name: "domain tags",
+    statements: [
+      // A label on a domain, set by hand. The domain does not have to have sent a report yet.
+      `CREATE TABLE IF NOT EXISTS domain_tags (
+        domain TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (domain, tag)
+      ) WITHOUT ROWID`,
+      `CREATE INDEX IF NOT EXISTS idx_domain_tags_tag ON domain_tags(tag)`,
+    ],
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].id;

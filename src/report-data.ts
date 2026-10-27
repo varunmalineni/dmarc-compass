@@ -6,7 +6,7 @@ import { loadOverview, type Overview, type SourceRow } from "./dashboard-data";
 import { loadDomains, type DomainRow, type DomainsData } from "./domains-data";
 import { loadTls, type TlsData } from "./tls-data";
 import { newFailingSenders, policyChanges, type Alert } from "./notify";
-import { sinceEpoch, type Filters, type ListState } from "./filters";
+import { effectiveDomains, sinceEpoch, type Filters, type ListState } from "./filters";
 
 export const REPORT_DOMAIN_ROWS = 15;
 export const REPORT_SENDER_ROWS = 8;
@@ -31,7 +31,8 @@ export async function loadSummary(db: D1Database, f: Filters): Promise<SummaryDa
   const now = Math.floor(Date.now() / 1000);
   const since = sinceEpoch(f.range, now);
   const risk: ListState = { q: "", sort: "risk", dir: "desc", page: 1 };
-  const scope = f.domains.length ? new Set(f.domains) : null;
+  const wanted = effectiveDomains(f);
+  const scope = wanted ? new Set(wanted) : null;
   const inScope = (a: Alert) => !scope || scope.has(String(a.data.domain));
 
   const [overview, domains, tls, changes, senders] = await Promise.all([

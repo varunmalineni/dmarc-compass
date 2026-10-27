@@ -570,7 +570,7 @@ export async function collectDigest(env: NotifyEnv, cfg: NotifyConfig, now: numb
   const [cur, prev, domains, senders, policies] = await Promise.all([
     periodTotals(env.DB, start, end),
     periodTotals(env.DB, start - days * DAY, start),
-    loadDomains(env.DB, { domains: [], range: statusDays }, list),
+    loadDomains(env.DB, { domains: [], range: statusDays, expr: null, scope: null }, list),
     newFailingSenders(env.DB, { kind: "period", since: start }, cfg.rules.newFailingSender.minMessages, now),
     policyChanges(env.DB, 0, start),
   ]);

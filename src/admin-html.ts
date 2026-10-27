@@ -352,6 +352,8 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
 
   const scripts = `
   // Section tabs. Without scripts every section is shown, one after another.
+  function oldTagsLink(){if(location.hash==='#tags')location.replace('/tags')}
+  oldTagsLink();window.addEventListener('hashchange',oldTagsLink);
   var TAB_IDS=${safeJson(tabs.map((t) => t.id))};
   // Setup status is drawn by the server. When a mailbox or a sync has changed what it
   // reports, the page reloads when you open that tab, so it never shows old information.

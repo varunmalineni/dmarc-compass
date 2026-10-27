@@ -52,7 +52,11 @@ import { accountView, checkLogin, getAdminLogin, saveStoredLogin, sessionMateria
 import { validateNewLogin } from "./credentials";
 import { clearCookie, cookieName, makeToken, readCookie, requesterKind, safeNext, sessionCookie, verifyToken } from "./session";
 import { renderLogin } from "./login-html";
-import { parseFilters, parseList, scopeLabel, rangeLabel, withFilters } from "./filters";
+import { parseList, scopeLabel, scopeSlug, rangeLabel, withFilters } from "./filters";
+import { describe } from "./domain-filter";
+import { loadFilters } from "./tags";
+import { overview as tagsOverview, tagsAction } from "./tags-admin";
+import { renderTagsPage } from "./tags-page";
 import { layout } from "./shared-ui";
 import type { LeaseResult, Runtime } from "./runtime";
 
@@ -399,7 +403,7 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
 
-  const f = parseFilters(url);
+  const f = await loadFilters(env.DB, url);
   const format = url.searchParams.get("format") === "json" ? "json" : "csv";
   const problem = url.searchParams.get("filter");
   const { list: mailboxList } = await loadMailboxes(env);
@@ -423,7 +427,7 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
         {
           dataset,
           generated_at: new Date().toISOString(),
-          scope: { domains: f.domains, range_days: f.range },
+          scope: { domains: f.domains, filter: f.expr ? describe(f.expr) : null, range_days: f.range },
           truncated: result.truncated,
           count: result.rows.length,
           rows: toJsonRows(result.columns, result.rows),
@@ -443,7 +447,7 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
 async function handleSummary(request: Request, env: Env, url: URL): Promise<Response> {
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
-  const f = parseFilters(url);
+  const f = await loadFilters(env.DB, url);
   const data = await loadSummary(env.DB, f);
   const download = url.searchParams.get("download") === "1";
   const keep = withFilters("/report", f);
@@ -451,7 +455,7 @@ async function handleSummary(request: Request, env: Env, url: URL): Promise<Resp
     downloadHref: keep + (keep.includes("?") ? "&" : "?") + "download=1",
     backHref: withFilters("/", f),
   });
-  const scope = f.domains.length === 0 ? "all-domains" : f.domains.length === 1 ? slug(f.domains[0]) : `${f.domains.length}-domains`;
+  const scope = scopeSlug(f);
   const range = f.range === null ? "all-time" : `last-${f.range}d`;
   return new Response(html, {
     headers: {
@@ -545,6 +549,11 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
     if (body.action === "mailboxes_state") return mailboxState();
 
     if (body.action === "account_save") return saveAccount(request, env, url, body);
+
+    if (typeof body.action === "string" && (body.action.startsWith("tag_") || body.action.startsWith("tags_"))) {
+      const reply = await tagsAction(env.DB, body.action, body);
+      if (reply) return Response.json(reply.body, { status: reply.status });
+    }
 
     if (body.action === "sync_schedule_save") {
       const minutes = await setSyncMinutes(env.DB, body.minutes);
@@ -677,6 +686,12 @@ async function route(request: Request, env: Env, rt: Runtime): Promise<Response>
 
     if (pathname === "/admin") return handleAdmin(request, env, rt, url);
 
+    if (pathname === "/tags") {
+      const denied = await requireAdmin(request, env);
+      if (denied) return denied;
+      return new Response(renderTagsPage(await tagsOverview(env.DB), url), { headers: { ...HTML, "cache-control": "private, no-store" } });
+    }
+
     if (pathname === "/report") return handleSummary(request, env, url);
 
     const exportMatch = pathname.match(/^\/export\/([a-z-]+)$/);
@@ -691,9 +706,10 @@ async function route(request: Request, env: Env, rt: Runtime): Promise<Response>
     const blocked = await dashboardGate(request, env);
     if (blocked) return blocked;
 
-    const f = parseFilters(url);
+    const f = await loadFilters(env.DB, url);
     const signedIn = await hasSession(request, env);
-    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout({ ...opts, signedIn }), { headers: HTML });
+    // The page differs for someone signed in (sign-out button), so no shared cache may keep and reuse it.
+    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout({ ...opts, signedIn }), { headers: { ...HTML, "cache-control": "private, no-cache", vary: "Cookie, Authorization" } });
     const scope = `${scopeLabel(f)} &middot; ${rangeLabel(f.range)}`;
 
     if (pathname === "/") {
@@ -706,7 +722,7 @@ async function route(request: Request, env: Env, rt: Runtime): Promise<Response>
     if (pathname === "/domains") {
       const list = parseList(url, DOMAIN_SORT_KEYS, "risk", "desc");
       const [data, chrome] = await Promise.all([loadDomains(env.DB, f, list), loadChrome(env.DB)]);
-      return page({ title: "Domains", subtitle: scope, active: "domains", url, filters: f, chrome, body: renderDomainsBody(data, f, list, url) });
+      return page({ title: "Domains", subtitle: scope, active: "domains", url, filters: f, chrome, body: renderDomainsBody(data, f, list, url, { editable: signedIn, tags: chrome.tags.map((t) => t.tag), colors: Object.fromEntries(chrome.tags.map((t) => [t.tag, t.color])) }) });
     }
 
     if (pathname === "/reports") {

@@ -9,11 +9,17 @@ const DAY = 86400;
 // SQL as ONE json parameter (see domainFilter) and only its length is capped.
 const MAX_DOMAINS = 500;
 
+import { decodeExpr, describe, encodeExpr, normalizeTag, type Group } from "./domain-filter.ts";
+
 export interface Filters {
   /** Empty means "all domains". */
   domains: string[];
   /** Days to look back; null means all time. */
   range: number | null;
+  /** The filter from the filter bar or a tag link (`f=` and `tag=` in the URL); null for none. */
+  expr: Group | null;
+  /** The domains `expr` matches, filled in by loadFilters(); null when there is no `expr`. */
+  scope: string[] | null;
 }
 
 export function parseFilters(url: URL): Filters {
@@ -25,7 +31,24 @@ export function parseFilters(url: URL): Filters {
   if (r === "all") range = null;
   else if (r && (RANGE_OPTIONS as readonly number[]).includes(Number(r))) range = Number(r);
 
-  return { domains, range };
+  // `tag=emea,prod` is the short form used by links ("any of these tags"); `f=` is the full filter.
+  const tags = (url.searchParams.get("tag") ?? "").split(",").map(normalizeTag).filter((t): t is string => t !== null).slice(0, 20);
+  const full = decodeExpr(url.searchParams.get("f"));
+  const quick: Group | null = tags.length ? { mode: "all", items: [{ field: "tag", op: tags.length === 1 ? "has" : "has_any", value: tags.length === 1 ? tags[0] : tags }] } : null;
+  const expr: Group | null = full && quick ? { mode: "all", items: [full, quick] } : (full ?? quick);
+
+  return { domains, range, expr, scope: null };
+}
+
+/** The domains every query must stay inside: the selected ones, the ones the filter matches, or both
+ * (a domain has to satisfy both). Null means no restriction. A filter that was never resolved matches
+ * nothing, so a mistake can only hide data, never leak it. */
+export function effectiveDomains(f: Filters): string[] | null {
+  const scoped = f.expr ? (f.scope ?? []) : null;
+  if (scoped === null) return f.domains.length ? f.domains : null;
+  if (f.domains.length === 0) return scoped;
+  const allowed = new Set(scoped);
+  return f.domains.filter((d) => allowed.has(d));
 }
 
 /** Epoch seconds at the start of the window (0 for all time). */
@@ -38,10 +61,23 @@ export function rangeLabel(range: number | null): string {
   return range === 365 ? "Last year" : `Last ${range} days`;
 }
 
+/** A short file-name-safe description of the scope. */
+export function scopeSlug(f: Filters): string {
+  if (f.expr) return "filtered";
+  if (f.domains.length === 0) return "all-domains";
+  if (f.domains.length === 1) return f.domains[0].replace(/[^a-z0-9.-]+/gi, "_");
+  return `${f.domains.length}-domains`;
+}
+
 export function scopeLabel(f: Filters): string {
-  if (f.domains.length === 0) return "All domains";
-  if (f.domains.length === 1) return f.domains[0];
-  return `${f.domains.length} domains`;
+  const parts: string[] = [];
+  if (f.domains.length === 1) parts.push(f.domains[0]);
+  else if (f.domains.length > 1) parts.push(`${f.domains.length} domains`);
+  if (f.expr) {
+    const text = describe(f.expr);
+    parts.push(`${text.length > 70 ? text.slice(0, 67) + "..." : text}${f.scope ? ` (${f.scope.length} domain${f.scope.length === 1 ? "" : "s"})` : ""}`);
+  }
+  return parts.length ? parts.join(" · ") : "All domains";
 }
 
 /** Builds a URL that keeps the current filters. `extra` params are added
@@ -49,6 +85,7 @@ export function scopeLabel(f: Filters): string {
 export function withFilters(path: string, f: Filters, extra: Record<string, string | undefined> = {}): string {
   const p = new URLSearchParams();
   if (f.domains.length) p.set("domains", f.domains.join(","));
+  if (f.expr) p.set("f", encodeExpr(f.expr));
   if (f.range === null) p.set("range", "all");
   else if (f.range !== DEFAULT_RANGE) p.set("range", String(f.range));
   for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== "") p.set(k, v);
@@ -59,8 +96,9 @@ export function withFilters(path: string, f: Filters, extra: Record<string, stri
 /** SQL fragment restricting `column` to the selected domains, or nothing for
  * "all domains". One bound parameter regardless of how many domains. */
 export function domainFilter(column: string, f: Filters): { sql: string; params: string[] } {
-  if (f.domains.length === 0) return { sql: "", params: [] };
-  return { sql: ` AND ${column} IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(f.domains)] };
+  const list = effectiveDomains(f);
+  if (list === null) return { sql: "", params: [] };
+  return { sql: ` AND ${column} IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(list)] };
 }
 
 /** Pins windowed scans of dmarc_records to the date index for short windows over
@@ -70,7 +108,7 @@ export function domainFilter(column: string, f: Filters): { sql: string; params:
  * (the domain index is right then), nor for a year or all time (the window is most of
  * the table, and walking in source order is then faster). */
 export function recordsByDate(f: Filters): string {
-  return f.domains.length === 0 && f.range !== null && f.range <= 90 ? " INDEXED BY idx_records_date" : "";
+  return effectiveDomains(f) === null && f.range !== null && f.range <= 90 ? " INDEXED BY idx_records_date" : "";
 }
 
 /** Escapes a user search string for use in LIKE ... ESCAPE '\\'. */

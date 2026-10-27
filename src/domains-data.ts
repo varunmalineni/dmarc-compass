@@ -3,6 +3,7 @@
 // is a few hundred KB of rows, and it lets us sort on derived values (risk,
 // readiness) that SQL pagination can't.
 
+import { effectiveTags, loadTagData, loadColors, countTags, ruleTags } from "./tags";
 import { domainFilter, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
 import { getLastSync } from "./app-settings";
 import type { Chrome } from "./shared-ui";
@@ -24,6 +25,10 @@ export interface DomainRow {
   sources: number;
   lastReportAt: number | null;
   status: DomainStatus;
+  /** Every tag the domain has, by hand or from a rule. */
+  tags: string[];
+  /** The ones that come only from a rule, so they can't be removed from the domain by hand. */
+  autoTags: string[];
 }
 
 export interface DomainsData {
@@ -80,6 +85,7 @@ export async function loadDomains(
   const t = new Map(traffic.results.map((r) => [r.domain, r]));
   const pol = new Map(policies.results.map((r) => [r.domain, asPolicy(r.policy)]));
 
+  const tagData = await loadTagData(db);
   let rows: DomainRow[] = reports.results.map((r) => {
     const x = t.get(r.domain);
     const total = x?.total ?? 0;
@@ -98,6 +104,8 @@ export async function loadDomains(
       sources: x?.sources ?? 0,
       lastReportAt: r.last,
       status,
+      tags: [...effectiveTags(r.domain, tagData)].sort(),
+      autoTags: [...ruleTags(r.domain, tagData)].filter((t) => !tagData.manual.get(r.domain)?.has(t)).sort(),
     };
   });
 
@@ -106,7 +114,7 @@ export async function loadDomains(
 
   if (list.q) {
     const q = list.q.toLowerCase();
-    rows = rows.filter((r) => r.domain.toLowerCase().includes(q));
+    rows = rows.filter((r) => r.domain.toLowerCase().includes(q) || r.tags.some((t) => t.includes(q)));
   }
 
   const dir = list.dir === "asc" ? 1 : -1;
@@ -130,9 +138,12 @@ export async function loadDomains(
 /** Data every dashboard page needs for its shell: the domain list for the
  * filter, and the last-sync indicator. */
 export async function loadChrome(db: D1Database): Promise<Chrome> {
-  const [domains, lastSync] = await Promise.all([
+  const [domains, lastSync, tagData, colors] = await Promise.all([
     db.prepare("SELECT DISTINCT domain FROM dmarc_reports ORDER BY domain COLLATE NOCASE").all<{ domain: string }>(),
     getLastSync(db),
+    loadTagData(db),
+    loadColors(db),
   ]);
-  return { allDomains: domains.results.map((r) => r.domain), lastSync };
+  const allDomains = domains.results.map((r) => r.domain);
+  return { allDomains, lastSync, tags: countTags(allDomains, tagData, colors) };
 }

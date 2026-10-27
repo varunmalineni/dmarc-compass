@@ -10,6 +10,7 @@ import { BenchDb, type Logged } from "./bench-db.ts";
 import { generate, SIZES } from "./gen.ts";
 import { ensureSchema } from "../../src/migrations";
 import { parseFilters, parseList } from "../../src/filters";
+import { loadFilters } from "../../src/tags";
 import { loadOverview, SOURCE_SORT_KEYS } from "../../src/dashboard-data";
 import { renderOverviewBody } from "../../src/dashboard-html";
 import { loadDomains, loadChrome, DOMAIN_SORT_KEYS } from "../../src/domains-data";
@@ -96,7 +97,7 @@ const kb = (s: string) => `${(Buffer.byteLength(s) / 1024).toFixed(0)} KB`;
 
 async function page(path: string, which: "overview" | "domains" | "reports" | "tls" | "map" | "report" | "detail"): Promise<string> {
   const url = new URL(BASE + path);
-  const f = parseFilters(url);
+  const f = await loadFilters(db, url);
   let html = "";
   if (which === "overview") {
     const list = parseList(url, SOURCE_SORT_KEYS, "risk", "desc");
@@ -136,6 +137,22 @@ const oneDomain = someDomains(1)[0];
 const busy = (bench.raw.prepare("SELECT domain FROM dmarc_reports GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 1").get() as { domain: string }).domain;
 const d25 = encodeURIComponent(someDomains(25).join(","));
 
+// ---- tags: about a quarter of the domains get tags by hand, and two rules add more
+
+if (count("SELECT COUNT(*) n FROM domain_tags") === 0) {
+  const all = (bench.raw.prepare("SELECT DISTINCT domain FROM dmarc_reports ORDER BY domain").all() as Array<{ domain: string }>).map((r) => r.domain);
+  const ins = bench.raw.prepare("INSERT OR IGNORE INTO domain_tags (domain, tag) VALUES (?, ?)");
+  bench.raw.exec("BEGIN");
+  all.forEach((d, i) => {
+    if (i % 4 === 0) ins.run(d, "tier-1");
+    if (i % 7 === 0) ins.run(d, "team-a");
+    if (i % 11 === 0) ins.run(d, "eu");
+  });
+  bench.raw.exec("COMMIT");
+  const rules = [{ id: "r1", tag: "numbered-low", expr: { field: "domain", op: "starts", value: "d00" } }, { id: "r2", tag: "ends-7", expr: { field: "domain", op: "ends", value: "7.example" } }];
+  bench.raw.prepare("INSERT OR REPLACE INTO app_settings VALUES ('tag_rules', ?, 0)").run(JSON.stringify(rules));
+}
+
 // -------------------------------------------------------------------- pages --
 
 const P: Array<[string, string, Parameters<typeof page>[1]]> = [
@@ -148,6 +165,12 @@ const P: Array<[string, string, Parameters<typeof page>[1]]> = [
   ["Overview, 1 busy domain, all time", `/?domains=${busy}&range=all`, "overview"],
   ["Overview, 25 domains, 90d", `/?domains=${d25}`, "overview"],
   ["Overview, sources searched ('out-1')", "/?q=out-1", "overview"],
+  ["Overview, tag filter (any 1 of ~400 domains), 90d", "/?tag=tier-1", "overview"],
+  ["Overview, tag AND NOT (tier-1 and not eu), 90d", `/?f=${encodeURIComponent(JSON.stringify({ all: [{ field: "tag", op: "has", value: "tier-1" }, { field: "tag", op: "not_has", value: "eu" }] }))}`, "overview"],
+  ["Overview, policy filter (needs latest policies), 90d", `/?f=${encodeURIComponent(JSON.stringify({ field: "policy", op: "is", value: "reject" }))}`, "overview"],
+  ["Domains, with tags column, 90d (default)", "/domains", "domains"],
+  ["Domains, tag filter", "/domains?tag=team-a", "domains"],
+  ["Reports list, tag filter, 90d", "/reports?tag=eu", "reports"],
   ["Domains, 90d (default)", "/domains", "domains"],
   ["Domains, all time", "/domains?range=all", "domains"],
   ["Domains, searched", "/domains?q=d01", "domains"],

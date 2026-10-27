@@ -2,14 +2,15 @@
 // filters (domains, time range, search) the page was showing.
 
 import { csvRow, CSV_BOM, isoDate, slug } from "./csv";
-import { domainFilter, likePattern, rangeLabel, recordsByDate, sinceEpoch, type Filters, type ListState } from "./filters";
+import { domainFilter, likePattern, rangeLabel, recordsByDate, scopeLabel, scopeSlug, sinceEpoch, type Filters, type ListState } from "./filters";
 import { loadDomains } from "./domains-data";
 import { FLAGGED_DKIM, FLAGGED_SPF } from "./reports-data";
+import { tagsExportRows } from "./tags-admin";
 
 /** A hard ceiling so one request cannot exhaust the Worker's memory. */
 export const EXPORT_MAX_ROWS = 100_000;
 
-export const DATASETS = ["domains", "sources", "reports", "records", "tls", "tls-failures"] as const;
+export const DATASETS = ["domains", "sources", "reports", "records", "tls", "tls-failures", "tags"] as const;
 export type Dataset = (typeof DATASETS)[number];
 
 export const DATASET_LABELS: Record<Dataset, string> = {
@@ -19,6 +20,7 @@ export const DATASET_LABELS: Record<Dataset, string> = {
   records: "Report records (one row per source per report)",
   tls: "TLS results",
   "tls-failures": "TLS failures",
+  tags: "Domain tags",
 };
 
 export interface ExportOptions {
@@ -48,13 +50,19 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
   const f = o.filters;
   const since = sinceEpoch(f.range);
 
+  if (dataset === "tags") {
+    const rows = await tagsExportRows(db);
+    const c = cap(rows);
+    return { columns: ["domain", "tags", "tags_from_rules"], rows: c.rows, truncated: c.truncated };
+  }
+
   if (dataset === "domains") {
     const list: ListState = { q: o.q, sort: "risk", dir: "desc", page: 1 };
     const data = await loadDomains(db, f, list, { all: true });
     const c = cap(data.rows);
     return {
-      columns: ["domain", "policy", "status", "messages", "passed", "failing", "pass_rate_pct", "sources", "last_report_utc"],
-      rows: c.rows.map((r) => [r.domain, r.policy, r.status, r.total, r.passed, r.failing, r.total ? Math.round(r.rate * 100) / 100 : null, r.sources, isoDate(r.lastReportAt)]),
+      columns: ["domain", "tags", "policy", "status", "messages", "passed", "failing", "pass_rate_pct", "sources", "last_report_utc"],
+      rows: c.rows.map((r) => [r.domain, r.tags.join("; "), r.policy, r.status, r.total, r.passed, r.failing, r.total ? Math.round(r.rate * 100) / 100 : null, r.sources, isoDate(r.lastReportAt)]),
       truncated: c.truncated,
     };
   }
@@ -186,7 +194,7 @@ export async function buildExport(db: D1Database, dataset: Dataset, o: ExportOpt
 }
 
 export function exportFilename(dataset: Dataset, f: Filters, ext: "csv" | "json", now = new Date()): string {
-  const scope = f.domains.length === 0 ? "all-domains" : f.domains.length === 1 ? slug(f.domains[0]) : `${f.domains.length}-domains`;
+  const scope = scopeSlug(f);
   const range = f.range === null ? "all-time" : `last-${f.range}d`;
   return `dmarc-compass_${dataset}_${scope}_${range}_${now.toISOString().slice(0, 10)}.${ext}`;
 }
@@ -210,6 +218,5 @@ export function csvStream(columns: string[], rows: unknown[][]): ReadableStream<
 }
 
 export function describeScope(f: Filters): string {
-  const d = f.domains.length === 0 ? "all domains" : f.domains.length === 1 ? f.domains[0] : `${f.domains.length} domains`;
-  return `${d}, ${rangeLabel(f.range).toLowerCase()}`;
+  return `${scopeLabel(f)}, ${rangeLabel(f.range).toLowerCase()}`;
 }

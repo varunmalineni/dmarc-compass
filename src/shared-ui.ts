@@ -4,6 +4,8 @@
 
 import { STYLES } from "./styles";
 import { RANGE_OPTIONS, DEFAULT_RANGE, withFilters, type Filters, type ListState } from "./filters";
+import { countConditions, encodeExpr, toWire } from "./domain-filter";
+import { FILTER_BAR_JS, FILTER_BUILDER_CSS, FILTER_BUILDER_JS, FILTER_OPS } from "./filter-builder-ui";
 import type { LastSync } from "./app-settings";
 
 export const BRAND = "dmarc-compass";
@@ -107,6 +109,7 @@ export function urlWith(url: URL, set: Record<string, string | undefined>, drop:
 export function hiddenFilterInputs(f: Filters, extra: Record<string, string | undefined> = {}): string {
   const fields: Record<string, string | undefined> = { ...extra };
   if (f.domains.length) fields.domains = f.domains.join(",");
+  if (f.expr) fields.f = encodeExpr(f.expr);
   if (f.range === null) fields.range = "all";
   else if (f.range !== DEFAULT_RANGE) fields.range = String(f.range);
   return Object.entries(fields)
@@ -203,10 +206,12 @@ export function exportMenu(url: URL, items: Array<{ dataset: string; label: stri
 
 export interface Chrome {
   allDomains: string[];
+  /** Tags in use, with how many domains carry each. */
+  tags: Array<{ tag: string; count: number; byRule: number; color: string; chosen: boolean }>;
   lastSync: LastSync | null;
 }
 
-export type NavKey = "overview" | "domains" | "reports" | "tls" | "map" | "report" | "admin";
+export type NavKey = "overview" | "domains" | "tags" | "reports" | "tls" | "map" | "report" | "admin";
 
 export interface PageOpts {
   title: string;
@@ -224,6 +229,8 @@ export interface PageOpts {
   css?: string;
   /** Signed in with the login page (not just a script's credentials): shows Sign out. */
   signedIn?: boolean;
+  /** Load the filter builder script (the filter bar loads it on its own). */
+  filterBuilder?: boolean;
 }
 
 const ICON = {
@@ -240,6 +247,8 @@ const ICON = {
   moon: '<svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
   chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
   globe: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg>',
+  filter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8.5V20l-4-2v-4.5z"/></svg>',
 };
 
 export const LOGO =
@@ -251,6 +260,7 @@ export const FAVICON =
 const NAV: Array<{ key: NavKey; href: string; label: string; icon: string }> = [
   { key: "overview", href: "/", label: "Overview", icon: ICON.overview },
   { key: "domains", href: "/domains", label: "Domains", icon: ICON.domains },
+  { key: "tags", href: "/tags", label: "Tags", icon: ICON.tag },
   { key: "reports", href: "/reports", label: "DMARC reports", icon: ICON.reports },
   { key: "tls", href: "/tls-reports", label: "TLS reports", icon: ICON.tls },
   { key: "map", href: "/map", label: "Sender map", icon: ICON.map },
@@ -364,6 +374,21 @@ function domainFilterHtml(allDomains: string[], selected: string[]): string {
   </div>`;
 }
 
+function filterBarHtml(f: Filters, chrome: Chrome): string {
+  const n = f.expr ? countConditions(f.expr) : 0;
+  return `<div class="dms">
+    <button type="button" class="dms-trigger" id="fb-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="fb-panel">
+      ${ICON.filter}<span class="label">Filter</span>${n ? `<span class="fb-count">${n}</span>` : ""}${ICON.chevron}
+    </button>
+    <div class="dms-panel fb-panel" id="fb-panel" hidden>
+      <div id="fb-root"></div>
+      <div class="fb-err" id="fb-msg" role="alert"></div>
+      <div class="dms-foot"><button type="button" class="link-btn" id="fb-clear">Clear filter</button><button type="button" class="btn" id="fb-apply">Apply</button></div>
+    </div>
+    <script type="application/json" id="fb-data">${safeJson({ ops: FILTER_OPS, tags: chrome.tags, expr: f.expr ? toWire(f.expr) : null })}</script>
+  </div>`;
+}
+
 function freshness(lastSync: LastSync | null): string {
   if (!lastSync) return `<span class="fresh" title="No sync has run yet"><i class="dot none"></i>Not synced yet</span>`;
   const age = Math.floor(Date.now() / 1000) - lastSync.at;
@@ -407,7 +432,7 @@ export function layout(o: PageOpts): string {
 ${o.charts ? `<script src="/vendor/chart.min.js"></script>\n<script>${CHART_SETUP}</script>` : ""}
 ${o.leaflet ? `<meta name="referrer" content="origin">
 <link rel="stylesheet" href="/vendor/leaflet.css">\n<script src="/vendor/leaflet.js"></script>` : ""}
-<style>${STYLES}${o.css ?? ""}</style>
+<style>${STYLES}${FILTER_BUILDER_CSS}${o.css ?? ""}</style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -427,7 +452,7 @@ ${o.leaflet ? `<meta name="referrer" content="origin">
         <h1>${escapeHtml(o.title)}</h1>
         ${o.subtitle ? `<div class="sub">${o.subtitle}</div>` : ""}
       </div>
-      <div class="filters">${o.chrome ? freshness(o.chrome.lastSync) : ""}${domainCtl}${ranges}</div>
+      <div class="filters">${o.chrome ? freshness(o.chrome.lastSync) : ""}${f && o.chrome ? filterBarHtml(f, o.chrome) : ""}${domainCtl}${ranges}</div>
     </header>
     <main id="main" tabindex="-1">
 ${o.body}
@@ -436,6 +461,8 @@ ${o.body}
 </div>
 <script>${SHELL_JS}</script>
 ${f && o.chrome ? `<script>${DOMAIN_FILTER_JS}</script>` : ""}
+${(f && o.chrome) || o.filterBuilder ? `<script>${FILTER_BUILDER_JS}</script>` : ""}
+${f && o.chrome ? `<script>${FILTER_BAR_JS}</script>` : ""}
 ${o.scripts ? `<script>${o.scripts}</script>` : ""}
 </body>
 </html>`;
