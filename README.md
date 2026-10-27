@@ -104,7 +104,7 @@ npm run setup
 
 Then open `https://<your-worker>.workers.dev/admin`, sign in, enter your mailbox, and click **Run sync now**. The first sync takes about a minute while the container starts; after that it syncs every 15 minutes, or on whatever schedule you choose under **Admin → Setup status → Sync schedule**.
 
-Nothing in the repository is specific to your account. Wrangler records your resource IDs in `wrangler.local.jsonc`, which is gitignored.
+Nothing in the repository is specific to your account. Wrangler finds your D1 database by its name, `dmarc-compass`, and creates it on the first deploy. `wrangler.local.jsonc`, a gitignored copy of the config, is what gets deployed. `npm run setup` is safe to run again: it redeploys, keeps the existing encryption key, and does not create a second database.
 
 <details>
 <summary><b>Cloudflare cost</b></summary>
