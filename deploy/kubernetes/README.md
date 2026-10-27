@@ -18,7 +18,7 @@ An example `Ingress` is in `ingress.example.yaml`.
    ```yaml
    images:
      - name: dmarc-compass
-       newName: ghcr.io/<owner>/dmarc-compass
+       newName: ghcr.io/varunmalineni/dmarc-compass
        newTag: "0.1.0"
    ```
 

@@ -7,7 +7,7 @@ Issues and pull requests are welcome. For anything larger than a small fix, plea
 You need Node.js 20 or newer (CI runs 22). Docker is needed only for the end-to-end tests and for running the Cloudflare version locally.
 
 ```bash
-git clone https://github.com/<you>/dmarc-compass.git
+git clone https://github.com/varunmalineni/dmarc-compass.git
 cd dmarc-compass
 npm install
 ```
