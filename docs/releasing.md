@@ -6,7 +6,7 @@ For maintainers. A release is a version tag; the [image workflow](../.github/wor
 
 ## Cut a release
 
-1. Set `version` in `package.json` to the new number (for example `0.2.0`) and merge that to the main branch.
+1. Set `version` in `package.json` to the new number (for example `0.2.0`), and set the same number as the pinned image tag in `compose.yaml` and as `newTag` in `deploy/kubernetes/kustomization.yaml` (also the examples in `.env.example` and the guides if you want them current). A test fails if the three differ. Merge that to the main branch, then tag straight away: until the tag is pushed, `main` points at an image that does not exist yet.
 2. Tag the commit and push the tag:
 
    ```sh

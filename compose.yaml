@@ -1,18 +1,18 @@
 # dmarc-compass with Docker Compose.
 #
 #   cp .env.example .env      # then edit it: admin password and encryption key
-#   docker compose up -d --build
+#   docker compose up -d
 #   open http://localhost:8080
+#
+# This pulls the published image, pinned to one release. To build the image from this checkout instead:
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
 #
 # The database is kept in the "dmarc-data" volume, so it survives upgrades and restarts.
 services:
   dmarc-compass:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-    # Built from this checkout by default. To use the published image instead, set DMARC_COMPASS_IMAGE in .env
-    # (see docs/self-hosting.md) and run `docker compose pull` before `docker compose up -d`.
-    image: ${DMARC_COMPASS_IMAGE:-dmarc-compass:local}
+    # The published image (x86-64 and ARM64), pinned to a release so an update is a choice you make.
+    # Set DMARC_COMPASS_IMAGE in .env to use another tag or your own build.
+    image: ${DMARC_COMPASS_IMAGE:-ghcr.io/varunmalineni/dmarc-compass:0.1.0}
     restart: unless-stopped
     ports:
       # Only this computer can reach it. To serve other machines, put a reverse proxy with HTTPS

@@ -67,7 +67,7 @@ You need a **mailbox with IMAP** that receives your `rua=` reports (set-up notes
 | **Data is kept in** | D1, managed by Cloudflare | A SQLite file in a Docker volume | A SQLite file on a persistent volume |
 | **Backups** | Cloudflare keeps 30 days of point-in-time restore | You back up the file (one command) | You back up the file (one command) |
 | **HTTPS** | Provided | Your reverse proxy (a Caddy example is included) | Your ingress |
-| **Upgrade** | `git pull && npm install && npm run deploy` | Change the image tag, `docker compose pull && docker compose up -d` | Change the image tag, `kubectl apply -k` |
+| **Upgrade** | `git pull && npm install && npm run deploy` | `git pull && docker compose up -d` | Change `newTag`, `kubectl apply -k` |
 
 It is the same app everywhere: the dashboards, alerts, digest, exports, sign-in and settings are identical.
 
@@ -88,16 +88,14 @@ npm run setup
 git clone https://github.com/varunmalineni/dmarc-compass.git
 cd dmarc-compass
 cp .env.example .env        # then edit it: ADMIN_PASSWORD and CONFIG_ENCRYPTION_KEY
-docker compose up -d --build
+docker compose up -d
 ```
 
-Open <http://localhost:8080>, sign in, add your mailbox under **Admin → Mailboxes** and click **Run sync now**. There is no default password; Compose stops and says which value is missing. To skip the build, use the [published image](docs/self-hosting.md#the-published-image) (x86-64 and ARM64) by setting `DMARC_COMPASS_IMAGE` in `.env`, then `docker compose pull && docker compose up -d`. Every setting, HTTPS with Caddy, backups and upgrading: **[Docker guide](docs/self-hosting.md)**.
+Open <http://localhost:8080>, sign in, add your mailbox under **Admin → Mailboxes** and click **Run sync now**. There is no default password; Compose stops and says which value is missing. Nothing is built: Compose pulls the published image (x86-64 and ARM64), pinned to one release. To build it from the checkout instead, or to use another tag, see the [Docker guide](docs/self-hosting.md).
 
 ### Kubernetes
 
 ```bash
-# set newName and newTag under "images:" in deploy/kubernetes/kustomization.yaml
-# (the published image, ghcr.io/varunmalineni/dmarc-compass, or one you built), then:
 kubectl apply -f deploy/kubernetes/namespace.yaml
 kubectl -n dmarc-compass create secret generic dmarc-compass-secrets \
   --from-literal=ADMIN_USER=admin --from-literal=ADMIN_PASSWORD='choose-a-long-password' \
@@ -106,7 +104,7 @@ kubectl apply -k deploy/kubernetes
 kubectl -n dmarc-compass port-forward service/dmarc-compass 8080:80      # then open http://localhost:8080
 ```
 
-The pod runs as a single replica, as a non-root user with a read-only filesystem, and meets the "restricted" Pod Security profile. Steps in detail, an Ingress example, backups and troubleshooting: **[Kubernetes guide](deploy/kubernetes/README.md)**.
+The manifests pull the published image (x86-64 and ARM64) pinned to one release; nothing to build or push. The pod runs as a single replica, as a non-root user with a read-only filesystem, and meets the "restricted" Pod Security profile. Steps in detail, an Ingress example, backups and troubleshooting: **[Kubernetes guide](deploy/kubernetes/README.md)**.
 
 ### After it is running
 
