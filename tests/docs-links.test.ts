@@ -47,7 +47,7 @@ test("the README names every way to run it and points at its guide", () => {
 
 test("every document is reachable from the README", () => {
   const readme = read("README.md");
-  const missing = FILES.filter((f) => f !== "README.md" && !readme.includes(f) && f !== "NOTICE.md").filter((f) => !readme.includes(f.replace(/^docs\//, "docs/")));
+  const missing = FILES.filter((f) => f !== "README.md" && f !== "NOTICE.md" && !readme.includes(f));
   assert.deepEqual(missing, []);
 });
 

@@ -29,6 +29,7 @@ import {
   pct,
   safe,
   sections,
+  unesc,
   type SlackBlock,
   type SlackMessage,
 } from "./slack-format.ts";
@@ -940,7 +941,7 @@ export async function previewAlerts(env: NotifyEnv): Promise<{ count: number; te
     const group = alerts.filter((a) => a.rule === rule).sort((a, b) => b.weight - a.weight);
     if (!group.length) continue;
     lines.push(`${RULE_TITLES[rule]} (${group.length})`);
-    for (const a of group.slice(0, MAX_LINES_PER_RULE)) lines.push("  " + a.line.replace(/[*`_]/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
+    for (const a of group.slice(0, MAX_LINES_PER_RULE)) lines.push("  " + unesc(a.line.replace(/[*`_]/g, "")));
     if (group.length > MAX_LINES_PER_RULE) lines.push(`  +${group.length - MAX_LINES_PER_RULE} more`);
   }
   return { count: alerts.length, text: lines };

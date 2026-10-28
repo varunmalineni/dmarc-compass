@@ -2,9 +2,9 @@
 // serves the static files that Cloudflare serves from its assets binding.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { extname, join, normalize, sep } from "node:path";
+import { extname, resolve, sep } from "node:path";
 
 /** The client's address, for the failed-login throttle. Behind a reverse proxy the
  * address comes from the proxy's X-Forwarded-For (its last entry, the one the proxy
@@ -117,7 +117,8 @@ export interface StaticFiles {
 
 export function staticFiles(root: string, headersFile: string | null): StaticFiles {
   const rules = headersFile ? parseHeadersFile(headersFile) : [];
-  const base = normalize(root);
+  const base = resolve(root);
+  const inside = (path: string, folder: string) => path === folder || path.startsWith(folder + sep);
   return {
     async serve(pathname, method) {
       if (method !== "GET" && method !== "HEAD") return null;
@@ -128,10 +129,12 @@ export function staticFiles(root: string, headersFile: string | null): StaticFil
         return null;
       }
       if (rel.includes("\0") || rel.endsWith("/") || rel === "/_headers") return null;
-      const file = normalize(join(base, rel));
-      // Stay inside the folder: no ../ tricks, however they are spelled.
-      if (file !== base && !file.startsWith(base + sep)) return null;
+      // Stay inside the folder: no ../ tricks, however they are spelled...
+      const file = resolve(base, "." + (rel.startsWith("/") ? rel : "/" + rel));
+      if (!inside(file, base)) return null;
       try {
+        // ...and no links that lead out of it: check where the file really is, too.
+        if (!inside(await realpath(file), await realpath(base))) return null;
         if (!(await stat(file)).isFile()) return null;
         const body = await readFile(file);
         const headers: Record<string, string> = { "content-type": TYPES[extname(file).toLowerCase()] ?? "application/octet-stream" };
