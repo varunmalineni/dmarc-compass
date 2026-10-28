@@ -12,7 +12,7 @@ cd dmarc-compass
 npm install
 ```
 
-To explore the interface with no mailbox, load the synthetic [demo data](docs/demo.md).
+To explore the interface with no mailbox, load the synthetic [demo data](docs/demo.md). To run your own changes in Docker, build the image from the checkout: `docker compose -f compose.yaml -f compose.build.yaml up -d --build`.
 
 ## Commands
 

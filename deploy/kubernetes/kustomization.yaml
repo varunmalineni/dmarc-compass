@@ -17,9 +17,10 @@ configMapGenerator:
     envs:
       - config.env
 
-# Point this at the image you built and pushed to your registry:
+# The published image (x86-64 and ARM64), pinned to a release. To use your own build, point this at the image you
+# pushed to your registry:
 #   kustomize edit set image dmarc-compass=registry.example.com/dmarc-compass:1.0
 images:
   - name: dmarc-compass
-    newName: dmarc-compass
-    newTag: local
+    newName: ghcr.io/varunmalineni/dmarc-compass
+    newTag: "0.1.0"

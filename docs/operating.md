@@ -16,7 +16,7 @@ Update with `git pull && npm install && npm run deploy`. Uninstall with `npx wra
 
 ```bash
 docker compose logs -f dmarc-compass                 # live logs, including each parser's
-git pull && docker compose up -d --build             # update; the data volume is kept
+git pull && docker compose pull && docker compose up -d   # update; the data volume is kept
 docker compose exec dmarc-compass node dist/server.mjs --backup /data/backup.db    # backup
 docker compose down                                   # stop (add -v to also delete the data)
 ```

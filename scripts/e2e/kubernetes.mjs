@@ -90,7 +90,7 @@ async function main() {
 
   console.log("Applying the test overlay (app + throwaway IMAP server in one pod) ...");
   kubectl("apply", "-k", join(root, "deploy/kubernetes-e2e"));
-  if (image !== "dmarc-compass:e2e") inNs(NS, "set", "image", "deployment/dmarc-compass", `dmarc-compass=${image}`);
+  inNs(NS, "set", "image", "deployment/dmarc-compass", `dmarc-compass=${image}`);
   inNs(NS, "rollout", "status", "deployment/dmarc-compass", "--timeout=240s");
 
   let imapPort = 0;

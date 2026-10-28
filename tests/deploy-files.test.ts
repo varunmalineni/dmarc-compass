@@ -96,9 +96,21 @@ test("the permissions are no wider than each job needs", () => {
   assert.equal(grants("publish"), "contents: write packages: write");
 });
 
-test("Compose builds by default and takes the published image from one setting", () => {
+test("Compose pulls the published image pinned to this release, and building from source is a separate opt-in file", () => {
+  const version = JSON.parse(read("package.json")).version as string;
   const compose = read("compose.yaml");
-  assert.match(compose, /image: \$\{DMARC_COMPASS_IMAGE:-dmarc-compass:local\}/);
-  assert.match(compose, /build:\n\s+context: \./);
+  assert.ok(compose.includes(`image: \${DMARC_COMPASS_IMAGE:-ghcr.io/`), "defaults to the published image");
+  assert.ok(compose.includes(`/dmarc-compass:${version}}`), `pinned to ${version}, the version in package.json`);
+  assert.ok(!/^\s+build:/m.test(compose), "compose.yaml itself never builds");
+  const build = read("compose.build.yaml");
+  assert.match(build, /dockerfile: deploy\/docker\/Dockerfile/);
+  assert.match(build, /image: dmarc-compass:local/);
   assert.match(read(".env.example"), /^# DMARC_COMPASS_IMAGE=/m);
+});
+
+test("the Kubernetes manifests pull the published image pinned to the same release", () => {
+  const version = JSON.parse(read("package.json")).version as string;
+  const k = read("deploy/kubernetes/kustomization.yaml");
+  assert.match(k, /newName: ghcr\.io\/[^/\s]+\/dmarc-compass\b/);
+  assert.ok(k.includes(`newTag: "${version}"`), `newTag is ${version}`);
 });

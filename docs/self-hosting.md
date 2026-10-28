@@ -6,7 +6,7 @@ For Kubernetes see [deploy/kubernetes](../deploy/kubernetes/README.md). For Clou
 
 The container holds the app and the unmodified upstream parser. The app starts **one parser per mailbox**, side by
 side, and keeps its data in a SQLite file in a volume. The dashboards, alerts, sign-in and settings are the same code
-as on Cloudflare. You need Docker (Compose v2 for the Compose file). The image is built for x86-64 and ARM64, and is published ready to use (see [The published image](#the-published-image)) or can be built from this repository.
+as on Cloudflare. You need Docker (Compose v2 for the Compose file). The image is published ready to use for x86-64 and ARM64 (see [The published image](#the-published-image)); nothing needs building unless you want to.
 
 You need three settings to start: an admin user, an admin password (at least 10 characters), and an encryption key.
 There is deliberately no default password.
@@ -15,7 +15,7 @@ There is deliberately no default password.
 
 ```sh
 cp .env.example .env              # then edit it
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open <http://localhost:8080>. In `.env` you must set:
@@ -25,7 +25,11 @@ Open <http://localhost:8080>. In `.env` you must set:
 | `ADMIN_USER`, `ADMIN_PASSWORD` | The sign-in. At least 10 characters; there is no default password. |
 | `CONFIG_ENCRYPTION_KEY` | Encrypts mailbox passwords in the database. Create one with `openssl rand -base64 32` and keep a copy: without it, saved mailbox passwords cannot be read. |
 
-`docker compose up -d --build` builds the image from this checkout. To use the [published image](#the-published-image) instead, skip the build: set `DMARC_COMPASS_IMAGE` in `.env` and run `docker compose pull && docker compose up -d`.
+`docker compose up -d` pulls the [published image](#the-published-image), pinned in `compose.yaml` to one release. To use another tag, set `DMARC_COMPASS_IMAGE` in `.env`. To build the image from this checkout instead (for example to try a change):
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
 
 If one is missing, Compose (or the container, with `docker run`) stops and tells you which. Then sign in, open **Admin → Mailboxes**, add your mailbox and click **Run sync now**, as described in the [README](../README.md#docker).
 
@@ -40,18 +44,18 @@ Each release is published to GitHub's container registry as `ghcr.io/varunmaline
 | `latest` | The newest release. | A first try. |
 | `edge` | The newest commit on the main branch, which may not be released. | Testing what is coming. |
 
-For Compose, set the image in `.env`, then pull and start:
+`compose.yaml` pins the release it was made for, so a checkout runs a known version. To follow a different tag, set it in `.env`, then pull and start:
 
 ```sh
 # .env
-DMARC_COMPASS_IMAGE=ghcr.io/varunmalineni/dmarc-compass:0.1.0
+DMARC_COMPASS_IMAGE=ghcr.io/varunmalineni/dmarc-compass:0.1
 ```
 
 ```sh
 docker compose pull && docker compose up -d
 ```
 
-To **upgrade**, change the tag, and run the same two commands. The data volume is kept, and tables are upgraded automatically when the new version starts.
+To **upgrade**, `git pull` (which moves the pinned version on) or change the tag in `.env`, then run `docker compose pull && docker compose up -d`. The data volume is kept, and tables are upgraded automatically when the new version starts.
 
 To pin an image exactly, use its digest: `ghcr.io/varunmalineni/dmarc-compass@sha256:...`. Each release's page lists it. You can see what a tag points at, and the attached build provenance, with `docker buildx imagetools inspect ghcr.io/varunmalineni/dmarc-compass:0.1.0`.
 
@@ -122,7 +126,7 @@ Keep your `CONFIG_ENCRYPTION_KEY` with the backup: without it the saved mailbox 
 
 ## Upgrading
 
-`git pull`, then `docker compose up -d --build`. Tables are upgraded automatically on start, and the data volume is kept.
+`git pull`, then `docker compose pull && docker compose up -d`. The new checkout pins the newer release, so this moves you on to it. Tables are upgraded automatically on start, and the data volume is kept. If you build from source, use `docker compose -f compose.yaml -f compose.build.yaml up -d --build` instead.
 
 ## Memory and limits
 
