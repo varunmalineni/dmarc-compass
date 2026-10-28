@@ -130,12 +130,12 @@ export function staticFiles(root: string, headersFile: string | null): StaticFil
       if (rel.includes("\0") || rel.endsWith("/") || rel === "/_headers") return null;
       // Stay inside the folder: no ../ tricks, however they are spelled...
       const file = resolve(base, "." + (rel.startsWith("/") ? rel : "/" + rel));
-      if (file !== base && !file.startsWith(base + sep)) return null;
+      if (!file.startsWith(base + sep)) return null; // the folder itself is not a file, so it needs no exception
       try {
         // ...and no links that lead out of it: check where the file really is, too, and read that.
         const real = await realpath(file);
         const realBase = await realpath(base);
-        if (real !== realBase && !real.startsWith(realBase + sep)) return null;
+        if (!real.startsWith(realBase + sep)) return null;
         if (!(await stat(real)).isFile()) return null;
         const body = await readFile(real);
         const headers: Record<string, string> = { "content-type": TYPES[extname(real).toLowerCase()] ?? "application/octet-stream" };
