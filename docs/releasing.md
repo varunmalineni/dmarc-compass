@@ -14,8 +14,8 @@ For maintainers. A release is a version tag; the [image workflow](../.github/wor
    git push origin v0.2.0
    ```
 
-   The workflow refuses a tag that does not match `package.json`, so the two cannot drift apart.
-3. Watch the **Image** workflow. When it is green there is a GitHub release with generated notes, and the image has its tags: `0.2.0`, `0.2` and `latest`. A tag with a dash, such as `v0.3.0-rc.1`, publishes only under its own name and is marked as a pre-release on GitHub, so `latest` and `0.3` never point at it.
+   The workflow refuses a tag that does not match `package.json`, or whose `compose.yaml` or Kubernetes `newTag` pin a different version, so none of them can drift apart. It stops before building anything, so a mistake costs seconds.
+3. Watch the **Image** workflow. When it is green there is a GitHub release with generated notes and two files attached (`compose.yaml` and `env.example`, so the Docker quick start works without cloning), and the image has its tags: `0.2.0`, `0.2` and `latest`. A tag with a dash, such as `v0.3.0-rc.1`, publishes only under its own name and is marked as a pre-release on GitHub, so `latest` and `0.3` never point at it.
 
 ## What the workflow does
 
