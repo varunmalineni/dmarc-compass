@@ -42,3 +42,8 @@ Tags are not moved after publishing, so fix forward: release the next patch vers
 
 - Make the repository public, then the package (above).
 - The documentation names this repository's owner in the clone and image commands. If you fork or rename the project, search for that name and replace it. The workflow itself computes the image name from the repository and needs no change.
+
+## Settings that live on GitHub, not in the repository
+
+- **Social preview image** (shown when the repository is linked in chat or social media): Settings → General → Social preview → Edit → Upload an image, and choose `docs/images/social-preview.png` (1280 × 640). GitHub has no API for this one.
+- **Branch and tag rules**, vulnerability reporting, secret scanning and the Actions approval policy are set under Settings; the main branch needs a pull request and the `typecheck`, `docker` and `kubernetes` checks.
