@@ -114,3 +114,14 @@ test("the Kubernetes manifests pull the published image pinned to the same relea
   assert.match(k, /newName: ghcr\.io\/[^/\s]+\/dmarc-compass\b/);
   assert.ok(k.includes(`newTag: "${version}"`), `newTag is ${version}`);
 });
+
+test("a release attaches compose.yaml and env.example, and refuses to publish if they pin the wrong version", () => {
+  const w = read(".github/workflows/image.yml");
+  assert.match(w, /cp compose\.yaml assets\/compose\.yaml/);
+  assert.match(w, /cp \.env\.example assets\/env\.example/, "attached without the leading dot, which GitHub would rewrite");
+  assert.match(w, /gh release create .* assets\/compose\.yaml assets\/env\.example/);
+  assert.match(w, /releases\/download\/\$GITHUB_REF_NAME\/compose\.yaml/, "the release notes show how to use them");
+  assert.match(w, /grep -qF "\/dmarc-compass:\$\{version\}\}" compose\.yaml/, "checks compose.yaml before anything is built");
+  assert.match(w, /newTag: \\"\$\{version\}\\"/, "and the Kubernetes tag too");
+  assert.ok(w.indexOf("does not pin the image") < w.indexOf("Build and push by digest"), "the check runs first, so a wrong pin costs seconds, not a build");
+});

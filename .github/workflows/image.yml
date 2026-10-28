@@ -2,7 +2,7 @@
 # artifact that was pushed, and only then gives it its tags.
 #
 #   v1.2.3 tag        ->  1.2.3, 1.2 and latest (a tag with a dash, such as v1.2.3-rc.1, only gets its own name),
-#                         plus a GitHub release
+#                         plus a GitHub release with compose.yaml and env.example attached
 #   push to main      ->  edge
 #   manual run        ->  the tag you type, for trying the workflow out (never "latest")
 #
@@ -58,6 +58,15 @@ jobs:
             version=$(node -p "require('./package.json').version")
             if [ "$GITHUB_REF_NAME" != "v$version" ]; then
               echo "::error::The tag is $GITHUB_REF_NAME but package.json says version $version. Change one so they agree."
+              exit 1
+            fi
+            # The files attached to the release must run the image this tag publishes.
+            if ! grep -qF "/dmarc-compass:${version}}" compose.yaml; then
+              echo "::error::compose.yaml does not pin the image to $version. Update the tag in compose.yaml before releasing."
+              exit 1
+            fi
+            if ! grep -qF "newTag: \"${version}\"" deploy/kubernetes/kustomization.yaml; then
+              echo "::error::deploy/kubernetes/kustomization.yaml does not pin newTag to $version. Update it before releasing."
               exit 1
             fi
           fi
@@ -249,7 +258,22 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           flag=""
           case "$GITHUB_REF_NAME" in *-*) flag="--prerelease" ;; esac
+          # Attached so the Docker quick start works without cloning the repository. GitHub renames files that begin
+          # with a dot, so the example settings are attached as env.example.
+          mkdir assets
+          cp compose.yaml assets/compose.yaml
+          cp .env.example assets/env.example
           cat > notes.md <<EOF
+          ## Run it with Docker, without cloning
+
+          \`\`\`
+          mkdir dmarc-compass && cd dmarc-compass
+          curl -fsSLO https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/compose.yaml
+          curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/env.example -o .env
+          # edit .env: ADMIN_PASSWORD and CONFIG_ENCRYPTION_KEY, then:
+          docker compose up -d
+          \`\`\`
+
           ## Container image
 
           \`\`\`
@@ -258,4 +282,4 @@ jobs:
 
           Pin it exactly with the digest: \`$IMAGE@$DIGEST\`. The image is built for x86-64 and ARM64 and carries build provenance and a software bill of materials.
           EOF
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --notes-file notes.md $flag
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --notes-file notes.md $flag assets/compose.yaml assets/env.example
