@@ -2,9 +2,9 @@
 // serves the static files that Cloudflare serves from its assets binding.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { extname, join, normalize, sep } from "node:path";
+import { extname, resolve, sep } from "node:path";
 
 /** The client's address, for the failed-login throttle. Behind a reverse proxy the
  * address comes from the proxy's X-Forwarded-For (its last entry, the one the proxy
@@ -117,7 +117,7 @@ export interface StaticFiles {
 
 export function staticFiles(root: string, headersFile: string | null): StaticFiles {
   const rules = headersFile ? parseHeadersFile(headersFile) : [];
-  const base = normalize(root);
+  const base = resolve(root);
   return {
     async serve(pathname, method) {
       if (method !== "GET" && method !== "HEAD") return null;
@@ -128,13 +128,17 @@ export function staticFiles(root: string, headersFile: string | null): StaticFil
         return null;
       }
       if (rel.includes("\0") || rel.endsWith("/") || rel === "/_headers") return null;
-      const file = normalize(join(base, rel));
-      // Stay inside the folder: no ../ tricks, however they are spelled.
-      if (file !== base && !file.startsWith(base + sep)) return null;
+      // Stay inside the folder: no ../ tricks, however they are spelled...
+      const file = resolve(base, "." + (rel.startsWith("/") ? rel : "/" + rel));
+      if (!file.startsWith(base + sep)) return null; // the folder itself is not a file, so it needs no exception
       try {
-        if (!(await stat(file)).isFile()) return null;
-        const body = await readFile(file);
-        const headers: Record<string, string> = { "content-type": TYPES[extname(file).toLowerCase()] ?? "application/octet-stream" };
+        // ...and no links that lead out of it: check where the file really is, too, and read that.
+        const real = await realpath(file);
+        const realBase = await realpath(base);
+        if (!real.startsWith(realBase + sep)) return null;
+        if (!(await stat(real)).isFile()) return null;
+        const body = await readFile(real);
+        const headers: Record<string, string> = { "content-type": TYPES[extname(real).toLowerCase()] ?? "application/octet-stream" };
         for (const r of rules) if (rel.startsWith(r.prefix)) Object.assign(headers, r.headers);
         return new Response(method === "HEAD" ? null : body, { headers });
       } catch {

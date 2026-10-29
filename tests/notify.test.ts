@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sanitizeConfig, validateWebhookUrl, isValidTimeZone, maskWebhook, sanitizeNickname, DEFAULT_CONFIG } from "../src/notify-config.ts";
-import { esc, safe, sections } from "../src/slack-format.ts";
+import { esc, safe, sections, unesc } from "../src/slack-format.ts";
 
 test("defaults: every alert rule is on and the digest is off", () => {
   const c = sanitizeConfig(undefined);
@@ -69,6 +69,10 @@ test("untrusted report text cannot create Slack links, mentions or markup", () =
   assert.equal(esc("<!channel> <https://evil.example|click> & more"), "&lt;!channel&gt; &lt;https://evil.example|click&gt; &amp; more");
   const s = safe("evil.example\n<!here>\u0000\u0007x");
   assert.ok(!s.includes("<") && !s.includes(">") && !/[\u0000-\u001f]/.test(s));
+});
+
+test("unesc() undoes esc() exactly, including text that already looks escaped", () => {
+  for (const s of ["a & b", "<b>", "&lt;", "&amp;lt;", "&amp;amp;", "x &gt; y < z", "plain"]) assert.equal(unesc(esc(s)), s, s);
 });
 
 test("safe() truncates long values", () => {

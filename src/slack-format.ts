@@ -7,6 +7,12 @@ export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** The reverse of esc(), for showing a message as plain text. `&amp;` has to be undone last: undone first, a
+ * literal "&lt;" that was escaped to "&amp;lt;" would come out as "<". */
+export function unesc(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 /** Escapes and shortens untrusted text for inline use. */
 export function safe(s: string, max = 80): string {
   const clean = s.replace(/[\u0000-\u001f\u007f]/g, " ").trim();

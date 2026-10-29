@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteD1 } from "../src/node/sqlite-d1.ts";
@@ -191,6 +191,23 @@ test("static files are served with the rules from _headers, and only from inside
   assert.equal(v?.headers.get("x-content-type-options"), "nosniff");
   assert.equal(v?.headers.get("cache-control"), "public, max-age=86400");
   assert.equal((await all.serve("/secret.txt", "GET"))?.headers.get("cache-control"), null, "other paths get no vendor rules");
+});
+
+test("a link inside the folder cannot be used to read files outside it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pub-"));
+  const outside = mkdtempSync(join(tmpdir(), "outside-"));
+  writeFileSync(join(dir, "ok.txt"), "fine");
+  writeFileSync(join(outside, "x.txt"), "outside");
+  symlinkSync(join(outside, "x.txt"), join(dir, "file-link.txt"));
+  symlinkSync(outside, join(dir, "dir-link"));
+  const files = staticFiles(dir, null);
+  assert.equal(await (await files.serve("/ok.txt", "GET"))!.text(), "fine");
+  assert.equal(await files.serve("/file-link.txt", "GET"), null, "a link to a file elsewhere");
+  assert.equal(await files.serve("/dir-link/x.txt", "GET"), null, "a link to a folder elsewhere");
+  // The folder itself may be reached through a link (a symlinked public directory is a normal deployment).
+  const viaLink = join(mkdtempSync(join(tmpdir(), "via-")), "public");
+  symlinkSync(dir, viaLink);
+  assert.equal(await (await staticFiles(viaLink, null).serve("/ok.txt", "GET"))!.text(), "fine");
 });
 
 test("the _headers format is understood", () => {
