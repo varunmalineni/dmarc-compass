@@ -102,8 +102,18 @@ async function main() {
   };
   await connectForwards();
   // The test mail server is a JVM in a second container, and the pod is "ready" before it is. On a slow machine
-  // (a CI runner) it can still be starting, so wait until it answers instead of racing it.
-  await until("the test mail server", async () => { await appendMessages(imapPort, []); return true; }, 120000, 1000);
+  // (a CI runner) it can still be starting, so wait until it answers instead of racing it. kubectl's port-forward can
+  // also die while the pod is still settling (a refused local port is the sign), and nothing else would notice, so a
+  // dead forwarder is replaced and the wait carries on.
+  await until("the test mail server", async () => {
+    try {
+      await appendMessages(imapPort, []);
+      return true;
+    } catch (err) {
+      if (forwarder === null || forwarder.exitCode !== null || forwarder.signalCode !== null) await connectForwards();
+      throw err;
+    }
+  }, 180000, 2000);
 
   const exec = (...a) => inNs(NS, "exec", podOf(NS), "-c", "dmarc-compass", "--", ...a);
   await runScenario({
