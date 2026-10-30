@@ -1,0 +1,10 @@
+{
+  "name": "dmarc-compass",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-21",
+  "assets": { "directory": "./public" },
+  "observability": { "enabled": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "dmarc-insights", "database_id": "94e4bb66-b833-4080-a8db-43bf5816f9d0" }
+  ]
+}

@@ -1,10 +1,12 @@
 // Response security headers and a Content-Security-Policy. Pure, so it can be
 // unit-tested with plain Node.
 //
-// Scripts run only if they carry this response's random nonce (or come from
-// our own origin), so markup injected through report data cannot execute even
-// if some escaping were ever missed. Styles allow inline attributes because
-// the pages use them; styles cannot run code.
+// Scripts run only if they carry this response's random nonce. The nonce is
+// generated before the page is rendered and stamped on the scripts the app
+// itself emits, so markup injected through report data or through a URL
+// parameter carries no nonce and cannot execute even if some escaping were
+// ever missed. Styles allow inline attributes because the pages use them;
+// styles cannot run code.
 
 export function newNonce(): string {
   const b = new Uint8Array(16);
@@ -26,12 +28,6 @@ export function csp(nonce: string, opts: { tiles?: boolean } = {}): string {
     "frame-ancestors 'none'",
     "object-src 'none'",
   ].join("; ");
-}
-
-/** Adds the nonce to every <script> tag. All text that reaches the HTML from
- * outside is escaped (< becomes &lt;), so a "<script" in the output is ours. */
-export function addNonce(html: string, nonce: string): string {
-  return html.replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`);
 }
 
 export const BASE_HEADERS: Record<string, string> = {

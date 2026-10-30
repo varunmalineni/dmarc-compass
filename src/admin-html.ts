@@ -121,7 +121,7 @@ function check(ok: boolean, label: string, detail: string): string {
   return `<li class="check ${ok ? "ok" : "todo"}"><span class="check-icon">${ok ? "&#10003;" : "!"}</span><div><div class="check-label">${label}</div><div class="check-detail">${detail}</div></div></li>`;
 }
 
-export function renderAdmin(vm: AdminViewModel, url: URL): string {
+export function renderAdmin(vm: AdminViewModel, url: URL, nonce: string): string {
   const s = vm.status;
 
   const lastSync = s.lastSync
@@ -687,7 +687,7 @@ export function renderAdmin(vm: AdminViewModel, url: URL): string {
     subtitle: "Setup, mailboxes, notifications and visibility. Requires the admin login.",
     active: "admin",
     filterBuilder: true,
-    url,
+    url, nonce,
     body: adminBody,
     scripts,
     css: CSS,

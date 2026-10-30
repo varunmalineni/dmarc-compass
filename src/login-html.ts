@@ -29,7 +29,7 @@ const SCRIPT = `(function(){
   var u=document.getElementById('u');if(u)u.focus();
 })();`;
 
-export function renderLogin(opts: { url: URL; next: string; error?: string; locked?: boolean }): string {
+export function renderLogin(opts: { url: URL; next: string; error?: string; locked?: boolean; nonce: string }): string {
   const body = `
 <div class="sk-row"><div class="sk-block sk-kpi"></div><div class="sk-block sk-kpi"></div><div class="sk-block sk-kpi"></div><div class="sk-block sk-kpi"></div></div>
 <div class="sk-block sk-wide"></div>
@@ -47,5 +47,5 @@ export function renderLogin(opts: { url: URL; next: string; error?: string; lock
     <button class="btn" type="submit"${opts.locked ? " disabled" : ""}>Sign in</button>
   </form>
 </div>`;
-  return layout({ title: "Sign in", active: null, url: opts.url, body, css: CSS, scripts: SCRIPT });
+  return layout({ title: "Sign in", active: null, url: opts.url, nonce: opts.nonce, body, css: CSS, scripts: SCRIPT });
 }

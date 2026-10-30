@@ -1,0 +1,1 @@
+(?i)(^|/)(\.source-aware|node_modules|\.wrangler|\.git)/

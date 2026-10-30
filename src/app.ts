@@ -23,7 +23,7 @@ import { renderReportsBody, renderReportDetailBody } from "./reports-html";
 import { renderAdmin } from "./admin-html";
 import { buildExport, csvStream, exportFilename, DATASETS, type Dataset } from "./exports";
 import { toJsonRows, slug } from "./csv";
-import { addNonce, BASE_HEADERS, clientKey, csp, newNonce } from "./security";
+import { BASE_HEADERS, clientKey, csp, newNonce } from "./security";
 import { isLocked, recordFailure, retryAfter, type AttemptState } from "./ratelimit";
 import { loadSummary } from "./report-data";
 import { renderSummary } from "./report-html";
@@ -193,10 +193,10 @@ const sameOrigin = (request: Request, url: URL) => {
 };
 
 /** The sign-in page and form. */
-async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleLogin(request: Request, env: Env, url: URL, nonce: string): Promise<Response> {
   const login = await getAdminLogin(env.DB, env);
   if (!login) return new Response(SETUP_HELP, { status: 503 });
-  const page = (status: number, opts: Omit<Parameters<typeof renderLogin>[0], "url">) => new Response(renderLogin({ ...opts, url }), { status, headers: { ...HTML, "cache-control": "no-store", "x-robots-tag": "noindex" } });
+  const page = (status: number, opts: Omit<Parameters<typeof renderLogin>[0], "url" | "nonce">) => new Response(renderLogin({ ...opts, url, nonce }), { status, headers: { ...HTML, "cache-control": "no-store", "x-robots-tag": "noindex" } });
 
   if (request.method === "GET") {
     const next = safeNext(url.searchParams.get("next"));
@@ -444,7 +444,7 @@ async function handleExport(request: Request, env: Env, dataset: Dataset, url: U
 }
 
 /** The printable summary report. Admin login only, like the exports. */
-async function handleSummary(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleSummary(request: Request, env: Env, url: URL, nonce: string): Promise<Response> {
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
   const f = await loadFilters(env.DB, url);
@@ -454,6 +454,7 @@ async function handleSummary(request: Request, env: Env, url: URL): Promise<Resp
   const html = renderSummary(data, {
     downloadHref: keep + (keep.includes("?") ? "&" : "?") + "download=1",
     backHref: withFilters("/", f),
+    nonce,
   });
   const scope = scopeSlug(f);
   const range = f.range === null ? "all-time" : `last-${f.range}d`;
@@ -506,7 +507,7 @@ async function syncScheduleView(env: Env, minutes?: number) {
   return { minutes: m, presets: PRESETS, nextAt: nextSyncAt(last, m, now), lastAttempt: last, tooSlow: scheduleTooSlow(gap, m), tickGap: gap };
 }
 
-async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): Promise<Response> {
+async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL, nonce: string): Promise<Response> {
   const denied = await requireAdmin(request, env);
   if (denied) return denied;
 
@@ -649,15 +650,16 @@ async function handleAdmin(request: Request, env: Env, rt: Runtime, url: URL): P
         imapConfigured: mailboxes.rows.some((m) => m.enabled),
         lastSync,
       },
-    }, url),
+    }, url, nonce),
     { headers: HTML },
   );
 }
 
 /** Adds security headers to every response and a Content-Security-Policy to
  * pages. The policy's nonce is generated per response and stamped on our own
- * <script> tags, so nothing injected into a page can run. */
-async function secured(res: Response, url: URL): Promise<Response> {
+ * <script> tags while the page is built, so nothing injected into a page can
+ * run: the nonce is never applied to markup we did not author. */
+async function secured(res: Response, url: URL, nonce: string): Promise<Response> {
   const headers = new Headers(res.headers);
   for (const [k, v] of Object.entries(BASE_HEADERS)) if (!headers.has(k)) headers.set(k, v);
 
@@ -665,36 +667,39 @@ async function secured(res: Response, url: URL): Promise<Response> {
   if (!type.startsWith("text/html") || headers.has("content-security-policy")) {
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   }
-  const nonce = newNonce();
   headers.set("content-security-policy", csp(nonce, { tiles: url.pathname === "/map" }));
   headers.delete("content-length");
-  return new Response(addNonce(await res.text(), nonce), { status: res.status, statusText: res.statusText, headers });
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
 /** Handles one HTTP request. */
 export async function handle(request: Request, env: Env, rt: Runtime): Promise<Response> {
-  return secured(await route(request, env, rt), new URL(request.url));
+  // The nonce is minted before the page is rendered so that the scripts the app
+  // itself emits can carry it. It is never applied to markup that came from
+  // outside, which is what keeps injected scripts from running.
+  const nonce = newNonce();
+  return secured(await route(request, env, rt, nonce), new URL(request.url), nonce);
 }
 
-async function route(request: Request, env: Env, rt: Runtime): Promise<Response> {
+async function route(request: Request, env: Env, rt: Runtime, nonce: string): Promise<Response> {
   {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
     await ensureSchema(env.DB);
 
-    if (pathname === "/login") return handleLogin(request, env, url);
+    if (pathname === "/login") return handleLogin(request, env, url, nonce);
     if (pathname === "/logout") return handleLogout(request, env, url);
 
-    if (pathname === "/admin") return handleAdmin(request, env, rt, url);
+    if (pathname === "/admin") return handleAdmin(request, env, rt, url, nonce);
 
     if (pathname === "/tags") {
       const denied = await requireAdmin(request, env);
       if (denied) return denied;
-      return new Response(renderTagsPage(await tagsOverview(env.DB), url), { headers: { ...HTML, "cache-control": "private, no-store" } });
+      return new Response(renderTagsPage(await tagsOverview(env.DB), url, nonce), { headers: { ...HTML, "cache-control": "private, no-store" } });
     }
 
-    if (pathname === "/report") return handleSummary(request, env, url);
+    if (pathname === "/report") return handleSummary(request, env, url, nonce);
 
     const exportMatch = pathname.match(/^\/export\/([a-z-]+)$/);
     if (exportMatch && (DATASETS as readonly string[]).includes(exportMatch[1])) {
@@ -711,8 +716,10 @@ async function route(request: Request, env: Env, rt: Runtime): Promise<Response>
     const f = await loadFilters(env.DB, url);
     const signedIn = await hasSession(request, env);
     // The page differs for someone signed in (sign-out button), so no shared cache may keep and reuse it.
-    const page = (opts: Parameters<typeof layout>[0]) => new Response(layout({ ...opts, signedIn }), { headers: { ...HTML, "cache-control": "private, no-cache", vary: "Cookie, Authorization" } });
-    const scope = `${scopeLabel(f)} &middot; ${rangeLabel(f.range)}`;
+    const page = (opts: Omit<Parameters<typeof layout>[0], "signedIn" | "nonce">) => new Response(layout({ ...opts, signedIn, nonce }), { headers: { ...HTML, "cache-control": "private, no-cache", vary: "Cookie, Authorization" } });
+    // The subtitle is escaped by layout(), so it is plain text here: a literal
+    // "·" rather than an "&middot;" entity, which the escaping would show.
+    const scope = `${scopeLabel(f)} · ${rangeLabel(f.range)}`;
 
     if (pathname === "/") {
       const list = parseList(url, SOURCE_SORT_KEYS, "risk", "desc");

@@ -218,6 +218,10 @@ export interface PageOpts {
   subtitle?: string;
   active: NavKey | null;
   url: URL;
+  /** The per-response CSP nonce. The page's own scripts carry it; nothing
+   * that arrives from outside may carry it, so it has to be known while the
+   * page is built. */
+  nonce: string;
   /** When present, the domain and time-range controls are shown. */
   filters?: Filters;
   chrome?: Chrome;
@@ -400,6 +404,7 @@ function freshness(lastSync: LastSync | null): string {
 export function layout(o: PageOpts): string {
   const f = o.filters ?? null;
   const link = (path: string) => (f ? withFilters(path, f) : path);
+  const n = escapeHtml(o.nonce);
 
   const nav = NAV.map(
     (n) =>
@@ -427,11 +432,11 @@ export function layout(o: PageOpts): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(o.title)} · ${BRAND}</title>
 <link rel="icon" href="${FAVICON}">
-<script>${THEME_INIT}</script>
+<script nonce="${n}">${THEME_INIT}</script>
 <link rel="preload" href="/vendor/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-${o.charts ? `<script src="/vendor/chart.min.js"></script>\n<script>${CHART_SETUP}</script>` : ""}
+${o.charts ? `<script nonce="${n}" src="/vendor/chart.min.js"></script>\n<script nonce="${n}">${CHART_SETUP}</script>` : ""}
 ${o.leaflet ? `<meta name="referrer" content="origin">
-<link rel="stylesheet" href="/vendor/leaflet.css">\n<script src="/vendor/leaflet.js"></script>` : ""}
+<link rel="stylesheet" href="/vendor/leaflet.css">\n<script nonce="${n}" src="/vendor/leaflet.js"></script>` : ""}
 <style>${STYLES}${FILTER_BUILDER_CSS}${o.css ?? ""}</style>
 </head>
 <body>
@@ -449,8 +454,8 @@ ${o.leaflet ? `<meta name="referrer" content="origin">
   <div class="main-col">
     <header class="topbar">
       <div class="titles">
-        <h1>${escapeHtml(o.title)}</h1>
-        ${o.subtitle ? `<div class="sub">${o.subtitle}</div>` : ""}
+<h1>${escapeHtml(o.title)}</h1>
+${o.subtitle ? `<div class="sub">${escapeHtml(o.subtitle)}</div>` : ""}
       </div>
       <div class="filters">${o.chrome ? freshness(o.chrome.lastSync) : ""}${f && o.chrome ? filterBarHtml(f, o.chrome) : ""}${domainCtl}${ranges}</div>
     </header>
@@ -459,11 +464,11 @@ ${o.body}
     </main>
   </div>
 </div>
-<script>${SHELL_JS}</script>
-${f && o.chrome ? `<script>${DOMAIN_FILTER_JS}</script>` : ""}
-${(f && o.chrome) || o.filterBuilder ? `<script>${FILTER_BUILDER_JS}</script>` : ""}
-${f && o.chrome ? `<script>${FILTER_BAR_JS}</script>` : ""}
-${o.scripts ? `<script>${o.scripts}</script>` : ""}
+<script nonce="${n}">${SHELL_JS}</script>
+${f && o.chrome ? `<script nonce="${n}">${DOMAIN_FILTER_JS}</script>` : ""}
+${(f && o.chrome) || o.filterBuilder ? `<script nonce="${n}">${FILTER_BUILDER_JS}</script>` : ""}
+${f && o.chrome ? `<script nonce="${n}">${FILTER_BAR_JS}</script>` : ""}
+${o.scripts ? `<script nonce="${n}">${o.scripts}</script>` : ""}
 </body>
 </html>`;
 }

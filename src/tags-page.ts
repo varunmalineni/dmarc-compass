@@ -30,12 +30,12 @@ var TG=${safeJson(view)};var TG_OPS=${safeJson(FILTER_OPS)};
 ${TAGS_JS}
 `;
 
-export function renderTagsPage(view: TagsView, url: URL): string {
+export function renderTagsPage(view: TagsView, url: URL, nonce: string): string {
   return layout({
     title: "Tags",
     subtitle: "Label domains to filter every page and to send alerts to the right people",
     active: "tags",
-    url,
+    url, nonce,
     signedIn: true,
     filterBuilder: true,
     css: CSS,
