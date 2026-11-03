@@ -5,4 +5,4 @@
 # Pinned to a release so deploys are reproducible. Dependabot opens a PR when
 # a new version is published; bump it deliberately, not implicitly.
 # https://github.com/cry-inc/dmarc-report-viewer
-FROM ghcr.io/cry-inc/dmarc-report-viewer:2.6.2
+FROM ghcr.io/cry-inc/dmarc-report-viewer:2.7.0
