@@ -8,7 +8,7 @@
 # The parser, from the upstream project (MIT), run unmodified. Pinned to a release;
 # Dependabot opens a PR when a new one is published. Keep this version equal to the
 # one in the root Dockerfile (a test checks that they match).
-FROM ghcr.io/cry-inc/dmarc-report-viewer:2.6.2 AS parser
+FROM ghcr.io/cry-inc/dmarc-report-viewer:2.7.0 AS parser
 
 FROM node:26-slim AS build
 WORKDIR /src
